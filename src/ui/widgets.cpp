@@ -2,7 +2,12 @@
 
 #include "ui/theme.hpp"
 
+#include "color_adjust.hpp"
+
+#include <imgui_internal.h>  // MarkItemEdited
+
 #include <glm/common.hpp>
+#include <glm/geometric.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
@@ -248,6 +253,93 @@ SliderResult adjustmentSlider(const char* label, float& value, float min, float 
     result.changed |= ImGui::SliderFloat("##value", &value, min, max, format, flags);
     result.released |= ImGui::IsItemDeactivatedAfterEdit();
     if (gradient) ImGui::PopStyleColor(3);
+    ImGui::PopID();
+    return result;
+}
+
+SliderResult compactSlider(const char* id, float& value, float min, float max, float defaultValue, const char* format,
+                           float width, ImGuiSliderFlags flags) {
+    SliderResult result;
+    ImGui::SetNextItemWidth(width);
+    result.changed = ImGui::SliderFloat(id, &value, min, max, format, flags);
+    result.released = ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && value != defaultValue) {
+        value = defaultValue;
+        result.changed = result.released = true;
+    }
+    return result;
+}
+
+ImU32 oklchColor(float lightness, float chroma, float hueDegrees, float alpha) {
+    const float angle = hueDegrees * 3.14159265f / 180.0f;
+    const Rgb linear = oklabToLinearSrgb({lightness, chroma * std::cos(angle), chroma * std::sin(angle)});
+    auto encode = [](float v) {
+        v = std::clamp(v, 0.0f, 1.0f);
+        v = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+        return v;
+    };
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(encode(linear[0]), encode(linear[1]), encode(linear[2]), alpha));
+}
+
+SliderResult colorWheel(const char* id, float& hue, float& saturation, float diameter) {
+    SliderResult result;
+    ImGui::PushID(id);
+    const glm::vec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##wheel", ImVec2(diameter, diameter));
+    const ImGuiID itemId = ImGui::GetItemID();
+    const float radius = diameter * 0.5f - 2.0f;
+    const glm::vec2 center = origin + glm::vec2(diameter * 0.5f);
+
+    if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        // Screen y points down; hue angles run counter-clockwise from +x.
+        const glm::vec2 offset = glm::vec2(ImGui::GetIO().MousePos) - center;
+        const float distance = std::min(glm::length(offset) / radius, 1.0f);
+        float angle = std::atan2(-offset.y, offset.x) * 180.0f / 3.14159265f;
+        if (angle < 0.0f) angle += 360.0f;
+        const float newSaturation = distance * 100.0f;
+        if (newSaturation != saturation || angle != hue) {
+            hue = angle;
+            saturation = newSaturation;
+            result.changed = true;
+            ImGui::MarkItemEdited(itemId);
+        }
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        saturation = 0.0f;
+        result.changed = result.released = true;
+    }
+    result.released |= ImGui::IsItemDeactivatedAfterEdit();
+
+    // Disc: neutral centre fading to the tint colours at the rim.
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    constexpr int kSegments = 72;
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+    const ImU32 centreColour = oklchColor(0.62f, 0.0f, 0.0f);
+    drawList->PrimReserve(kSegments * 3, kSegments * 3);
+    for (int i = 0; i < kSegments; ++i) {
+        const float a0 = static_cast<float>(i) / kSegments * 360.0f;
+        const float a1 = static_cast<float>(i + 1) / kSegments * 360.0f;
+        const auto rim = [&](float degrees) {
+            const float r = degrees * 3.14159265f / 180.0f;
+            return ImVec2(center.x + radius * std::cos(r), center.y - radius * std::sin(r));
+        };
+        const auto base = static_cast<ImDrawIdx>(drawList->_VtxCurrentIdx);
+        drawList->PrimWriteVtx(ImVec2(center.x, center.y), uv, centreColour);
+        drawList->PrimWriteVtx(rim(a0), uv, oklchColor(0.62f, 0.13f, a0));
+        drawList->PrimWriteVtx(rim(a1), uv, oklchColor(0.62f, 0.13f, a1));
+        drawList->PrimWriteIdx(base);
+        drawList->PrimWriteIdx(static_cast<ImDrawIdx>(base + 1));
+        drawList->PrimWriteIdx(static_cast<ImDrawIdx>(base + 2));
+    }
+    drawList->AddCircle(ImVec2(center.x, center.y), radius, IM_COL32(0, 0, 0, 140), kSegments, 1.0f);
+
+    // Handle at (hue, saturation).
+    const float angle = hue * 3.14159265f / 180.0f;
+    const glm::vec2 handle = center + glm::vec2(std::cos(angle), -std::sin(angle)) * (radius * saturation / 100.0f);
+    const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+    drawList->AddCircleFilled(ImVec2(handle.x, handle.y), hot ? 6.0f : 5.0f, oklchColor(0.7f, 0.13f * saturation / 100.0f, hue));
+    drawList->AddCircle(ImVec2(handle.x, handle.y), hot ? 6.0f : 5.0f, IM_COL32(255, 255, 255, 230), 16, 1.5f);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hue %.0f, saturation %.0f\nDouble-click to reset", hue, saturation);
     ImGui::PopID();
     return result;
 }

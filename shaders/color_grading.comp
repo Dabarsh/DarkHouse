@@ -1,0 +1,54 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse — presence and 3-way colour grading (ColorGradingNode in
+// color_nodes.hpp), in Oklab:
+//
+//   1. Saturation scales all chroma; vibrance scales muted colours most.
+//   2. Shadow / midtone / highlight weights from lightness: a partition of
+//      unity whose split point is set by balance and whose overlap is set by
+//      blending. Each zone's wheel adds a chroma offset (its hue and
+//      saturation) and a lightness change; the global wheel applies
+//      everywhere. Offsets fade out towards black so black stays neutral.
+//
+// Alpha passes through.
+
+#include "color_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D inputImage;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D outputImage;
+
+// Must match darkhouse::ColorGradingPush (80 bytes), derived on the CPU.
+layout(push_constant) uniform Grading {
+    float saturationScale;
+    float vibrance;
+    float pivot;
+    float blending;
+    vec4 wheels[4];  // shadows, midtones, highlights, global: (a offset, b offset, lightness stops, 0)
+} pc;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, imageSize(outputImage)))) return;
+    vec4 source = imageLoad(inputImage, coord);
+    vec3 lab = linearSrgbToOklab(source.rgb);
+
+    float chroma = length(lab.yz);
+    float scale = pc.saturationScale * max(0.0, 1.0 + pc.vibrance * (1.0 - smoothstep(0.0, 0.2, chroma)));
+    lab.yz *= scale;
+
+    float t = clamp(lab.x, 0.0, 1.0);
+    float c1 = 0.5 * pc.pivot, h1 = 0.5 * pc.pivot * pc.blending;
+    float c2 = 0.5 * (1.0 + pc.pivot), h2 = 0.5 * (1.0 - pc.pivot) * pc.blending;
+    float toMid = smoothstep(c1 - h1, c1 + h1, t);
+    float toHigh = smoothstep(c2 - h2, c2 + h2, t);
+    vec3 w = vec3(1.0 - toMid, toMid - toHigh, toHigh);
+
+    vec3 grade = pc.wheels[3].xyz + w.x * pc.wheels[0].xyz + w.y * pc.wheels[1].xyz + w.z * pc.wheels[2].xyz;
+    float guard = smoothstep(0.0, 0.1, lab.x);
+    lab.yz += grade.xy * guard;
+    lab.x *= exp2(grade.z / 3.0);
+
+    imageStore(outputImage, coord, vec4(storable(oklabToLinearSrgb(lab)), source.a));
+}

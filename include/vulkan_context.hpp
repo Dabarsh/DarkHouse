@@ -140,6 +140,21 @@ public:
     // and blocks until the GPU finishes.
     void submitAndWait(const std::function<void(VkCommandBuffer)>& record) const;
 
+    // A submission the caller polls instead of waiting for. Work submitted
+    // later on the queue is ordered after it (the queue executes in order),
+    // so only the host has to check finished() before reading its results.
+    struct Submission {
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        [[nodiscard]] bool pending() const noexcept { return fence != VK_NULL_HANDLE; }
+    };
+    // Records and submits without waiting. Every Submission must be
+    // release()d exactly once.
+    [[nodiscard]] Submission submitAsync(const std::function<void(VkCommandBuffer)>& record) const;
+    [[nodiscard]] bool finished(const Submission& submission) const;
+    // Waits for the submission if it is still running, then frees it.
+    void release(Submission& submission) const noexcept;
+
     // One tightly packed texel rectangle to copy into a texture.
     struct RegionUpload {
         std::uint32_t x = 0;

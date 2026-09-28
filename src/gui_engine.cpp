@@ -167,6 +167,8 @@ bool GuiEngine::pumpPlatformEvents(DarkHouseApp& app) {
     // A photo being decoded animates the viewport and must appear the moment
     // it is ready: draw at the display rate until then (and settle after).
     if (app.photo().state == PhotoStatus::State::LOADING) idleFrames_ = 0;
+    // Likewise while the develop graph re-renders: the result must show up.
+    if (app.developBusy()) idleFrames_ = 0;
     if (window_->minimized()) {
         // Nothing to draw. Block briefly instead of spinning, but keep the
         // engine loop turning so imports still complete while minimized.

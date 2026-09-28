@@ -155,27 +155,6 @@ VectorContent ellipseShape(float cx, float cy, float rx, float ry) {
     return shape;
 }
 
-// --- Adjustment helpers ----------------------------------------------------------
-
-ImU32 hsv(float h, float s, float v) {
-    float r = 0.0f, g = 0.0f, b = 0.0f;
-    ImGui::ColorConvertHSVtoRGB(h - std::floor(h), s, v, r, g, b);
-    return ImGui::GetColorU32(ImVec4(r, g, b, 1.0f));
-}
-
-struct HslBand {
-    const char* name;
-    float hue;  // 0..1
-};
-constexpr std::array<HslBand, 8> kBands{{{"Red", 0.0f / 360.0f},
-                                         {"Orange", 30.0f / 360.0f},
-                                         {"Yellow", 55.0f / 360.0f},
-                                         {"Green", 120.0f / 360.0f},
-                                         {"Aqua", 180.0f / 360.0f},
-                                         {"Blue", 225.0f / 360.0f},
-                                         {"Purple", 270.0f / 360.0f},
-                                         {"Magenta", 310.0f / 360.0f}}};
-
 }  // namespace
 
 // -----------------------------------------------------------------------------
@@ -440,195 +419,15 @@ void AdjustmentsPanel::draw(PanelContext& ctx) {
     ImGui::TextDisabled("Develop  |  %s", asset ? asset->fileName.c_str() : "document (no photo open)");
     ImGui::Spacing();
 
-    if (ImGui::CollapsingHeader("Tone", ImGuiTreeNodeFlags_DefaultOpen)) drawTone(ctx);
-    if (ImGui::CollapsingHeader("Noise Reduction", ImGuiTreeNodeFlags_DefaultOpen)) drawNoiseReduction(ctx);
-    if (ImGui::CollapsingHeader("White Balance & Presence", ImGuiTreeNodeFlags_DefaultOpen)) drawColor();
-    if (ImGui::CollapsingHeader("HSL / Color", ImGuiTreeNodeFlags_DefaultOpen)) drawHsl();
+    if (ImGui::CollapsingHeader("Basic", ImGuiTreeNodeFlags_DefaultOpen)) basic_.draw(ctx);
+    if (ImGui::CollapsingHeader("Color Mixer (HSL)", ImGuiTreeNodeFlags_DefaultOpen)) mixer_.draw(ctx);
+    if (ImGui::CollapsingHeader("Color Grading", ImGuiTreeNodeFlags_DefaultOpen)) grading_.draw(ctx);
+    if (ImGui::CollapsingHeader("Detail", ImGuiTreeNodeFlags_DefaultOpen)) detail_.draw(ctx);
 
     ImGui::Spacing();
     ImGui::PushTextWrapPos();
-    ImGui::TextDisabled("Tone and noise reduction run live on the GPU develop graph and are saved with the photo. "
-                        "White balance, presence and HSL are interface previews; their GPU nodes are not "
-                        "implemented yet.");
+    ImGui::TextDisabled("Every control runs live on the GPU develop graph and is saved with the photo when released.");
     ImGui::PopTextWrapPos();
-}
-
-void AdjustmentsPanel::drawTone(PanelContext& ctx) {
-    // Find the exposure node of the develop stack currently on the canvas.
-    const std::vector<EditNodeRecord>& stack = ctx.app.developStack();
-    std::optional<std::uint32_t> node;
-    for (std::size_t i = 0; i < stack.size(); ++i) {
-        if (stack[i].nodeType == ExposureNode::kTypeName && stack[i].serializedParams.size() == sizeof(ExposureParams)) {
-            node = static_cast<std::uint32_t>(i);
-            if (!toneEditing_) std::memcpy(&tone_, stack[i].serializedParams.data(), sizeof tone_);
-            break;
-        }
-    }
-    if (!node) {
-        ImGui::TextDisabled("The develop stack has no exposure node.");
-        return;
-    }
-
-    float contrast = tone_.contrast * 100.0f;
-    float highlights = tone_.highlights * 100.0f;
-    float shadows = tone_.shadows * 100.0f;
-    SliderResult results[4];
-    results[0] = adjustmentSlider("Exposure", tone_.exposureEV, -5.0f, 5.0f, 0.0f, "%+.2f EV",
-                                  IM_COL32(20, 20, 20, 255), IM_COL32(235, 235, 235, 255));
-    results[1] = adjustmentSlider("Contrast", contrast, -100.0f, 100.0f, 0.0f, "%+.0f");
-    results[2] = adjustmentSlider("Highlights", highlights, -100.0f, 100.0f, 0.0f, "%+.0f");
-    results[3] = adjustmentSlider("Shadows", shadows, -100.0f, 100.0f, 0.0f, "%+.0f");
-    tone_.contrast = contrast / 100.0f;
-    tone_.highlights = highlights / 100.0f;
-    tone_.shadows = shadows / 100.0f;
-
-    bool changed = false;
-    bool released = false;
-    for (const SliderResult& result : results) {
-        changed |= result.changed;
-        released |= result.released;
-    }
-    toneEditing_ = ImGui::IsAnyItemActive() && (changed || toneEditing_) && !released;
-    if (ImGui::SmallButton("Reset Tone")) {
-        tone_ = ExposureParams{};
-        changed = released = true;
-    }
-    if (changed || released) {
-        // Live while dragging; written to the catalog when the drag ends.
-        ctx.app.postEvent(SetDevelopParamsEvent{*node, ExposureNode::pack(tone_), released});
-    }
-}
-
-void AdjustmentsPanel::drawNoiseReduction(PanelContext& ctx) {
-    const std::vector<EditNodeRecord>& stack = ctx.app.developStack();
-    std::optional<std::uint32_t> node;
-    for (std::size_t i = 0; i < stack.size(); ++i) {
-        if (stack[i].nodeType == DenoiseNode::kTypeName && stack[i].serializedParams.size() == sizeof(DenoiseParams)) {
-            node = static_cast<std::uint32_t>(i);
-            if (!noiseEditing_) std::memcpy(&noise_, stack[i].serializedParams.data(), sizeof noise_);
-            break;
-        }
-    }
-
-    bool enabled = node.has_value();
-    if (ImGui::Checkbox("Enable##Denoise", &enabled)) {
-        std::vector<EditNodeRecord> next = stack;
-        if (enabled) {
-            // First in the stack: the noise model assumes scene-linear light, before any tone change.
-            next.insert(next.begin(), EditNodeRecord{0, std::string(DenoiseNode::kTypeName), DenoiseNode::pack(noise_)});
-        } else {
-            next.erase(next.begin() + *node);
-        }
-        ctx.app.postEvent(SetDevelopStackEvent{std::move(next), true});
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", node ? "multiscale, GPU" : "off");
-    if (!node) return;
-
-    const auto* denoise = dynamic_cast<const DenoiseNode*>(ctx.app.developNode(*node));
-    const DenoiseStatistics stats = denoise ? denoise->statistics() : DenoiseStatistics{};
-
-    float luminance = noise_.luminance * 100.0f;
-    float colour = noise_.chrominance * 100.0f;
-    float detail = noise_.detail * 100.0f;
-    SliderResult results[4];
-    results[0] = adjustmentSlider("Luminance", luminance, 0.0f, 100.0f, 50.0f, "%.0f");
-    results[1] = adjustmentSlider("Color", colour, 0.0f, 100.0f, 50.0f, "%.0f");
-    results[2] = adjustmentSlider("Detail", detail, 0.0f, 100.0f, 20.0f, "%.0f");
-    noise_.luminance = luminance / 100.0f;
-    noise_.chrominance = colour / 100.0f;
-    noise_.detail = detail / 100.0f;
-
-    // Noise level: measured from the image on every render, or set by hand
-    // (sigma after the square-root variance stabilisation, see denoise.hpp).
-    constexpr float kMinLevel = 0.001f;
-    constexpr float kMaxLevel = 0.25f;
-    bool automatic = noise_.noiseLevel <= 0.0f;
-    if (ImGui::Checkbox("Auto noise level", &automatic)) {
-        // Manual starts from the current estimate, so the image does not jump.
-        const float measured = stats.sigma[0] > 0.0f ? stats.sigma[0] : 0.02f;
-        noise_.noiseLevel = automatic ? 0.0f : std::clamp(measured, kMinLevel, kMaxLevel);
-        results[3].changed = results[3].released = true;
-    }
-    if (automatic) {
-        if (stats.sigma[0] > 0.0f) {
-            ImGui::TextDisabled("Measured  luma %.4f  color %.4f / %.4f", stats.sigma[0], stats.sigma[1], stats.sigma[2]);
-            ImGui::SetItemTooltip("Noise sigma per opponent channel, estimated from the finest wavelet band\n"
-                                  "(median absolute deviation) in the square-root domain.");
-        }
-    } else {
-        const SliderResult level = adjustmentSlider("Noise level", noise_.noiseLevel, kMinLevel, kMaxLevel, 0.02f,
-                                                    "%.4f", 0, 0, ImGuiSliderFlags_Logarithmic);
-        results[3].changed |= level.changed;
-        results[3].released |= level.released;
-    }
-    if (stats.levels > 0) {
-        std::string line = std::to_string(stats.levels) + (stats.levels == 1 ? " detail band" : " detail bands");
-        for (const auto& timing : ctx.app.developTimings()) {
-            if (timing.id != *node) continue;
-            char gpuTime[48];
-            std::snprintf(gpuTime, sizeof gpuTime, ", %.1f ms on the GPU", timing.milliseconds);
-            line += gpuTime;
-        }
-        ImGui::TextDisabled("%s", line.c_str());
-    }
-
-    bool changed = false;
-    bool released = false;
-    for (const SliderResult& result : results) {
-        changed |= result.changed;
-        released |= result.released;
-    }
-    noiseEditing_ = ImGui::IsAnyItemActive() && (changed || noiseEditing_) && !released;
-    if (ImGui::SmallButton("Reset Noise Reduction")) {
-        noise_ = DenoiseParams{};
-        changed = released = true;
-    }
-    if (changed || released) {
-        ctx.app.postEvent(SetDevelopParamsEvent{*node, DenoiseNode::pack(noise_), released});
-    }
-}
-
-void AdjustmentsPanel::drawColor() {
-    adjustmentSlider("Temperature", temperature_, 2000.0f, 12000.0f, 5500.0f, "%.0f K", IM_COL32(70, 120, 230, 255),
-                     IM_COL32(240, 200, 70, 255));
-    adjustmentSlider("Tint", tint_, -150.0f, 150.0f, 0.0f, "%+.0f", IM_COL32(60, 190, 80, 255),
-                     IM_COL32(210, 70, 200, 255));
-    adjustmentSlider("Vibrance", vibrance_, -100.0f, 100.0f, 0.0f, "%+.0f", IM_COL32(128, 128, 128, 255),
-                     IM_COL32(230, 110, 60, 255));
-    adjustmentSlider("Saturation", saturation_, -100.0f, 100.0f, 0.0f, "%+.0f", IM_COL32(128, 128, 128, 255),
-                     IM_COL32(230, 60, 60, 255));
-}
-
-void AdjustmentsPanel::drawHsl() {
-    if (!ImGui::BeginTabBar("##HslMode")) return;
-    auto bandSliders = [&](std::array<float, 8>& values, int mode) {
-        for (std::size_t i = 0; i < kBands.size(); ++i) {
-            const float h = kBands[i].hue;
-            ImU32 left = 0;
-            ImU32 right = 0;
-            switch (mode) {
-            case 0: left = hsv(h - 1.0f / 12.0f, 0.75f, 0.85f); right = hsv(h + 1.0f / 12.0f, 0.75f, 0.85f); break;
-            case 1: left = hsv(h, 0.0f, 0.55f); right = hsv(h, 1.0f, 0.9f); break;
-            default: left = hsv(h, 0.8f, 0.15f); right = hsv(h, 0.35f, 1.0f); break;
-            }
-            adjustmentSlider(kBands[i].name, values[i], -100.0f, 100.0f, 0.0f, "%+.0f", left, right);
-        }
-        if (ImGui::SmallButton("Reset")) values.fill(0.0f);
-    };
-    if (ImGui::BeginTabItem("Hue")) {
-        bandSliders(hue_, 0);
-        ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Saturation")) {
-        bandSliders(hslSaturation_, 1);
-        ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Luminance")) {
-        bandSliders(luminance_, 2);
-        ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
 }
 
 }  // namespace darkhouse::ui

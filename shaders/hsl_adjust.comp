@@ -1,0 +1,64 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse — HSL colour mixer (HslNode in color_nodes.hpp).
+//
+// Works in Oklch, so "hue", "saturation" (chroma) and "luminance" (lightness)
+// are perceptual. Eight bands are centred on the Oklch hues of the pure sRGB
+// red, orange, yellow, green, aqua, blue, purple and magenta; a pixel takes a
+// smooth crossfade of the two bands around its hue. Adjustments fade in with
+// chroma, since greys have no hue. Alpha passes through.
+
+#include "color_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D inputImage;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D outputImage;
+
+// Must match darkhouse::HslParams (96 bytes): each value in [-100, 100].
+layout(push_constant) uniform HslParams {
+    float hue[8];
+    float saturation[8];
+    float luminance[8];
+} params;
+
+// darkhouse::kHslBandHues / kHslMaxHueShift.
+const float kBandHues[8] = float[](29.2, 53.0, 109.8, 142.5, 194.8, 264.1, 293.9, 328.4);
+const float kMaxHueShift = 30.0;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, imageSize(outputImage)))) return;
+    vec4 source = imageLoad(inputImage, coord);
+
+    vec3 lab = linearSrgbToOklab(source.rgb);
+    float chroma = length(lab.yz);
+    vec3 rgb = source.rgb;
+    if (chroma > 0.0) {  // atan(0, 0) is undefined
+        float hue = degrees(atan(lab.z, lab.y));
+        if (hue < 0.0) hue += 360.0;
+
+        int i = 7;
+        for (int k = 0; k < 8; ++k) {
+            if (hue >= kBandHues[k]) i = k;
+        }
+        int j = (i + 1) & 7;
+        float h0 = kBandHues[i];
+        float h1 = j == 0 ? kBandHues[0] + 360.0 : kBandHues[j];
+        float h = hue < h0 ? hue + 360.0 : hue;
+        float blend = smoothstep(0.0, 1.0, (h - h0) / (h1 - h0));
+        float wi = 1.0 - blend;
+        float wj = blend;
+
+        float colourful = smoothstep(0.0, 0.05, chroma);
+        float hueShift = (wi * params.hue[i] + wj * params.hue[j]) * 0.01 * kMaxHueShift * colourful;
+        float saturation = (wi * params.saturation[i] + wj * params.saturation[j]) * 0.01 * colourful;
+        float stops = (wi * params.luminance[i] + wj * params.luminance[j]) * 0.01 * colourful;
+
+        float newHue = radians(hue + hueShift);
+        float newChroma = chroma * max(0.0, 1.0 + saturation);
+        float lightness = lab.x * exp2(stops / 3.0);  // L ~ Y^(1/3)
+        rgb = oklabToLinearSrgb(vec3(lightness, newChroma * cos(newHue), newChroma * sin(newHue)));
+    }
+    imageStore(outputImage, coord, vec4(storable(rgb), source.a));
+}

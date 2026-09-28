@@ -53,6 +53,9 @@ endif()
 set(DARKHOUSE_SHADER_SOURCES
     shaders/exposure.comp
     shaders/display_srgb.comp
+    shaders/white_balance.comp
+    shaders/hsl_adjust.comp
+    shaders/color_grading.comp
     shaders/denoise_down0.comp
     shaders/denoise_down.comp
     shaders/denoise_sigma.comp
@@ -60,6 +63,7 @@ set(DARKHOUSE_SHADER_SOURCES
     shaders/denoise_final.comp)
 # Headers pulled in with #include; every shader is rebuilt when one changes.
 set(DARKHOUSE_SHADER_INCLUDES
+    shaders/color_common.glsl
     shaders/denoise_common.glsl
     shaders/denoise_config.h)
 list(TRANSFORM DARKHOUSE_SHADER_INCLUDES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE DARKHOUSE_SHADER_INCLUDE_PATHS)
@@ -175,6 +179,9 @@ add_library(darkhouse_core STATIC
     src/ai_segmentation.cpp
     src/denoise.cpp
     src/denoise_node.cpp
+    src/color_adjust.cpp
+    src/color_nodes.cpp
+    src/develop_stack.cpp
     src/image_decoder.cpp
     src/ui/library_model.cpp
     include/app_controller.hpp
@@ -189,6 +196,9 @@ add_library(darkhouse_core STATIC
     include/ai_segmentation.hpp
     include/denoise.hpp
     include/denoise_node.hpp
+    include/color_adjust.hpp
+    include/color_nodes.hpp
+    include/develop_stack.hpp
     include/image_decoder.hpp
     src/tiff_reader.hpp
     src/parallel.hpp
@@ -219,6 +229,7 @@ if(DARKHOUSE_GUI)
         src/ui/workspace_layout.cpp
         src/ui/theme.cpp
         src/ui/widgets.cpp
+        src/ui/develop_sections.cpp
         src/ui/panels/left_dock.cpp
         src/ui/panels/center_dock.cpp
         src/ui/panels/right_dock.cpp
@@ -229,6 +240,7 @@ if(DARKHOUSE_GUI)
         include/ui/workspace_layout.hpp
         include/ui/theme.hpp
         include/ui/widgets.hpp
+        include/ui/develop_sections.hpp
         include/ui/panels.hpp)
     target_link_libraries(darkhouse_gui PUBLIC darkhouse_core DarkHouse::imgui glfw glm::glm)
     target_include_directories(darkhouse_gui PRIVATE "${CMAKE_BINARY_DIR}/generated")  # darkhouse_ui_font.hpp
@@ -309,6 +321,21 @@ if(DARKHOUSE_BUILD_TESTS)
     darkhouse_apply_build_flags(darkhouse_layer_stack_test)
     add_test(NAME layer_stack COMMAND darkhouse_layer_stack_test)
     set_tests_properties(layer_stack PROPERTIES LABELS "layers" TIMEOUT 120)
+
+    add_executable(darkhouse_color_adjust_test tests/color_adjust_test.cpp)
+    target_link_libraries(darkhouse_color_adjust_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_color_adjust_test)
+    add_test(NAME color_adjust COMMAND darkhouse_color_adjust_test)
+    set_tests_properties(color_adjust PROPERTIES LABELS "color" TIMEOUT 60)
+
+    add_executable(darkhouse_color_gpu_test tests/color_gpu_test.cpp)
+    target_link_libraries(darkhouse_color_gpu_test PRIVATE darkhouse_core)
+    target_compile_definitions(darkhouse_color_gpu_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+    darkhouse_apply_build_flags(darkhouse_color_gpu_test)
+    add_test(NAME color_gpu COMMAND darkhouse_color_gpu_test)
+    set_tests_properties(color_gpu PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS "color;vulkan" TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
 
     add_executable(darkhouse_denoise_test tests/denoise_test.cpp)
     target_link_libraries(darkhouse_denoise_test PRIVATE darkhouse_core)

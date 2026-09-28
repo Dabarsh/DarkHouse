@@ -100,6 +100,7 @@ struct SetDevelopParamsEvent {
     std::uint32_t nodeIndex = 0;
     std::vector<std::byte> serializedParams;
     bool persist = false;
+    std::string nodeType;  // when set, the event is dropped unless the node at nodeIndex is of this type
 };
 // Replaces the whole develop stack, e.g. to add or remove a node, rebuilds
 // the develop graph and re-renders. Nodes are renumbered in order. With
@@ -228,6 +229,9 @@ public:
     [[nodiscard]] const std::vector<RenderPipelineGraph::NodeTiming>& developTimings() const noexcept {
         return developTimings_;
     }
+    // A develop evaluation is running on the GPU, or an edit is waiting for
+    // the next one (the canvas is visible). Front-ends keep drawing meanwhile.
+    [[nodiscard]] bool developBusy() const noexcept;
     // Increments whenever the catalog may have changed (import finished,
     // rating, flag or label written), so views know when to re-query.
     [[nodiscard]] std::uint64_t catalogRevision() const noexcept { return catalogRevision_; }
@@ -283,6 +287,7 @@ private:
     GPUTexture canvasTexture_;
     std::unique_ptr<RenderPipelineGraph> developGraph_;
     std::vector<RenderPipelineGraph::NodeTiming> developTimings_;
+    VulkanContext::Submission developSubmission_;  // the develop evaluation in flight, if any
     bool graphDirty_ = true;
     std::uint64_t canvasGeneration_ = 0;
     bool frontEndAttached_ = false;

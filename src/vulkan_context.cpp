@@ -559,37 +559,60 @@ VkShaderModule VulkanContext::loadShaderModule(const std::filesystem::path& spir
 }
 
 void VulkanContext::submitAndWait(const std::function<void(VkCommandBuffer)>& record) const {
+    Submission submission = submitAsync(record);
+    release(submission);
+}
+
+VulkanContext::Submission VulkanContext::submitAsync(const std::function<void(VkCommandBuffer)>& record) const {
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool_;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    checkVk(vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffer), "vkAllocateCommandBuffers");
+    Submission submission;
+    checkVk(vkAllocateCommandBuffers(device_, &allocInfo, &submission.commandBuffer), "vkAllocateCommandBuffers");
 
     VkFence fence = VK_NULL_HANDLE;
-    ScopeExit cleanup([&] {
+    try {
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        checkVk(vkBeginCommandBuffer(submission.commandBuffer, &beginInfo), "vkBeginCommandBuffer");
+        record(submission.commandBuffer);
+        checkVk(vkEndCommandBuffer(submission.commandBuffer), "vkEndCommandBuffer");
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        checkVk(vkCreateFence(device_, &fenceInfo, nullptr, &fence), "vkCreateFence");
+
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &submission.commandBuffer;
+        checkVk(vkQueueSubmit(computeQueue_, 1, &submit, fence), "vkQueueSubmit");
+    } catch (...) {
         if (fence != VK_NULL_HANDLE) vkDestroyFence(device_, fence, nullptr);
-        vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
-    });
+        vkFreeCommandBuffers(device_, commandPool_, 1, &submission.commandBuffer);
+        throw;
+    }
+    submission.fence = fence;
+    return submission;
+}
 
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    checkVk(vkBeginCommandBuffer(commandBuffer, &beginInfo), "vkBeginCommandBuffer");
-    record(commandBuffer);
-    checkVk(vkEndCommandBuffer(commandBuffer), "vkEndCommandBuffer");
+bool VulkanContext::finished(const Submission& submission) const {
+    if (!submission.pending()) return true;
+    const VkResult status = vkGetFenceStatus(device_, submission.fence);
+    if (status == VK_NOT_READY) return false;
+    checkVk(status, "vkGetFenceStatus");
+    return true;
+}
 
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    checkVk(vkCreateFence(device_, &fenceInfo, nullptr, &fence), "vkCreateFence");
-
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &commandBuffer;
-    checkVk(vkQueueSubmit(computeQueue_, 1, &submit, fence), "vkQueueSubmit");
-    checkVk(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+void VulkanContext::release(Submission& submission) const noexcept {
+    if (!submission.pending()) return;
+    vkWaitForFences(device_, 1, &submission.fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(device_, submission.fence, nullptr);
+    vkFreeCommandBuffers(device_, commandPool_, 1, &submission.commandBuffer);
+    submission = Submission{};
 }
 
 GPUBuffer VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible) const {

@@ -200,7 +200,10 @@ void DarkHouseApp::initializeAi() {
 }
 
 void DarkHouseApp::disableCanvas() noexcept {
-    if (gpu_) gpu_->waitIdle();  // in-flight UI frames may still sample the canvas
+    if (gpu_) {
+        gpu_->waitIdle();  // in-flight UI frames may still sample the canvas
+        gpu_->release(developSubmission_);
+    }
     developGraph_.reset();
     developTimings_.clear();
     if (gpu_) gpu_->destroyTexture(canvasTexture_);
@@ -227,6 +230,7 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
     // Clearing destroys the nodes' output images, which UI frames still in
     // flight may be sampling.
     gpu_->waitIdle();
+    gpu_->release(developSubmission_);
     developGraph_->clear();
     developTimings_.clear();
     ++canvasGeneration_;
@@ -384,6 +388,11 @@ void DarkHouseApp::handle(const SetDevelopParamsEvent& event) {
         return;
     }
     EditNodeRecord& record = developStack_[event.nodeIndex];
+    if (!event.nodeType.empty() && event.nodeType != record.nodeType) {
+        logLine("warn", "develop parameters for a ", event.nodeType, " node ignored: node ", event.nodeIndex, " is ",
+            record.nodeType);
+        return;
+    }
     try {
         // The develop graph is a linear chain built in stack order, so node
         // ids equal stack indices (see rebuildDevelopGraph).
@@ -580,18 +589,36 @@ void DarkHouseApp::uploadDirtyCanvasTiles() {
 
 void DarkHouseApp::renderFrame(FrameContext& frame) {
     if (!developGraph_ || developGraph_->empty()) return;
-    if (graphDirty_) {
-        gpu_->submitAndWait([this](VkCommandBuffer commandBuffer) { developGraph_->evaluateGraph(commandBuffer); });
+    // Non-blocking: the graph is submitted and the frame goes on. The UI
+    // samples its output later on the same queue, so it sees the finished
+    // image without the CPU waiting. While one evaluation runs, further
+    // changes only mark the graph dirty; the next frame after it finishes
+    // submits once with the latest parameters (edits coalesce instead of
+    // queueing up behind a slow GPU).
+    if (developSubmission_.pending() && gpu_->finished(developSubmission_)) {
+        gpu_->release(developSubmission_);
         developTimings_ = developGraph_->readTimings();
+    }
+    if (graphDirty_ && !developSubmission_.pending()) {
+        developSubmission_ =
+            gpu_->submitAsync([this](VkCommandBuffer commandBuffer) { developGraph_->evaluateGraph(commandBuffer); });
         graphDirty_ = false;
     }
     const std::vector<RenderPipelineGraph::NodeId> sinks = developGraph_->sinkNodes();
     if (!sinks.empty()) frame.canvasOutput = &developGraph_->outputOf(sinks.back());
 }
 
+bool DarkHouseApp::developBusy() const noexcept {
+    if (developSubmission_.pending()) return true;
+    return graphDirty_ && developGraph_ != nullptr && showsCanvas(mode());
+}
+
 bool DarkHouseApp::idle() const {
-    std::lock_guard lock(eventMutex_);
-    return events_.empty() && pendingImports_.empty() && !photoLoad_.valid();
+    {
+        std::lock_guard lock(eventMutex_);
+        if (!events_.empty()) return false;
+    }
+    return pendingImports_.empty() && !photoLoad_.valid() && !developBusy();
 }
 
 void DarkHouseApp::shutdown() noexcept {

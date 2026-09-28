@@ -1,5 +1,6 @@
 #include "render_pipeline.hpp"
 
+#include "color_nodes.hpp"
 #include "denoise_node.hpp"
 #include "vulkan_utils.hpp"
 
@@ -212,6 +213,9 @@ std::unique_ptr<ComputeNode> createComputeNode(std::string_view nodeType, const 
                                                const std::filesystem::path& shaderDirectory) {
     if (nodeType == ExposureNode::kTypeName) return std::make_unique<ExposureNode>(context, shaderDirectory);
     if (nodeType == DenoiseNode::kTypeName) return std::make_unique<DenoiseNode>(context, shaderDirectory);
+    if (nodeType == WhiteBalanceNode::kTypeName) return std::make_unique<WhiteBalanceNode>(context, shaderDirectory);
+    if (nodeType == HslNode::kTypeName) return std::make_unique<HslNode>(context, shaderDirectory);
+    if (nodeType == ColorGradingNode::kTypeName) return std::make_unique<ColorGradingNode>(context, shaderDirectory);
     throw std::invalid_argument("unknown compute node type '" + std::string(nodeType) + "'");
 }
 

@@ -31,12 +31,32 @@ bool colorLabelPicker(const char* id, int& label, bool allowAny);
 struct SliderResult {
     bool changed = false;   // value changed this frame (while dragging too)
     bool released = false;  // an edit finished this frame: persist now
+
+    SliderResult& operator|=(const SliderResult& other) noexcept {
+        changed |= other.changed;
+        released |= other.released;
+        return *this;
+    }
 };
 // Slider with an optional horizontal gradient behind it (hue, temperature,
 // tint...). Double-click resets to `defaultValue`, like most raw developers.
 SliderResult adjustmentSlider(const char* label, float& value, float min, float max, float defaultValue,
                               const char* format, ImU32 gradientLeft = 0, ImU32 gradientRight = 0,
                               ImGuiSliderFlags flags = ImGuiSliderFlags_None);
+
+// Slider of an explicit width without a label column (wheel columns, tool
+// options). Double-click resets to `defaultValue`.
+SliderResult compactSlider(const char* id, float& value, float min, float max, float defaultValue, const char* format,
+                           float width, ImGuiSliderFlags flags = ImGuiSliderFlags_None);
+
+// Colour-grading wheel: a hue / saturation disc whose handle sets the hue
+// (angle) and saturation (distance from the centre, 0..100). The disc shows
+// the Oklch hues the grading shader applies. Double-click resets to neutral.
+SliderResult colorWheel(const char* id, float& hue, float& saturation, float diameter);
+
+// sRGB display colour of an Oklch colour (lightness, chroma, hue in degrees),
+// clipped to the displayable range.
+[[nodiscard]] ImU32 oklchColor(float lightness, float chroma, float hueDegrees, float alpha = 1.0f);
 
 // --- Formatting -----------------------------------------------------------------
 [[nodiscard]] std::string formatDateTime(std::int64_t unixSeconds);  // "2024-06-01 14:03" (UTC)

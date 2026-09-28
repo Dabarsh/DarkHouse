@@ -8,8 +8,8 @@
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
 #pragma once
 
-#include "denoise.hpp"
 #include "render_pipeline.hpp"
+#include "ui/develop_sections.hpp"
 #include "ui/panel.hpp"
 
 #include <glm/vec2.hpp>
@@ -102,30 +102,18 @@ private:
     int nameCounter_ = 1;
 };
 
-// Develop adjustments. Tone drives the GPU develop graph (exposure node);
-// white balance, presence and HSL are UI previews until their nodes exist.
+// Develop adjustments: white balance, tone, presence, colour mixer, colour
+// grading and noise reduction, all live on the GPU develop graph.
 class AdjustmentsPanel final : public Panel {
 public:
     AdjustmentsPanel() noexcept : Panel(PanelId::ADJUSTMENTS) {}
     void draw(PanelContext& ctx) override;
 
 private:
-    void drawTone(PanelContext& ctx);
-    void drawNoiseReduction(PanelContext& ctx);
-    void drawColor();
-    void drawHsl();
-
-    ExposureParams tone_{};
-    bool toneEditing_ = false;  // while a slider is held, the panel owns the values
-    DenoiseParams noise_{};     // kept while noise reduction is off, so re-enabling restores it
-    bool noiseEditing_ = false;
-    float temperature_ = 5500.0f;
-    float tint_ = 0.0f;
-    float vibrance_ = 0.0f;
-    float saturation_ = 0.0f;
-    std::array<float, 8> hue_{};
-    std::array<float, 8> hslSaturation_{};
-    std::array<float, 8> luminance_{};
+    BasicSection basic_;
+    ColorMixerSection mixer_;
+    ColorGradingSection grading_;
+    DetailSection detail_;
 };
 
 }  // namespace darkhouse::ui
