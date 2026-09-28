@@ -1,11 +1,12 @@
 // Colour adjustment tests (CPU reference, no GPU): Oklab, white balance,
-// HSL colour mixer, colour grading, parameter packing and the canonical
-// develop-stack order. The GPU nodes are checked against these references
+// HSL colour mixer, colour grading, tone curves, parameter packing and the
+// canonical develop-stack order. The GPU nodes are checked against these references
 // in color_gpu_test.cpp.
 
 #include "color_adjust.hpp"
 #include "develop_stack.hpp"
 #include "render_pipeline.hpp"
+#include "tone_curve.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -220,6 +221,81 @@ void testPacking() {
     CHECK(packParams(ExposureParams{1.0f, 0.0f, 0.0f, 0.0f}) == ExposureNode::pack(ExposureParams{1.0f, 0.0f, 0.0f, 0.0f}));
 }
 
+Curve makeCurve(std::initializer_list<CurvePoint> points) {
+    Curve curve;
+    for (const CurvePoint& p : points) curve.points[curve.count++] = p;
+    return curve;
+}
+
+void testToneCurve() {
+    // Transfer curve round trip, including past white.
+    for (float v : {0.0f, 0.001f, 0.0031308f, 0.18f, 0.5f, 1.0f, 4.0f, 100.0f}) {
+        CHECK(near(decodeTransfer(encodeTransfer(v)), v, 1e-5f * std::max(1.0f, v)));
+    }
+    CHECK(near(encodeTransfer(0.18f), 0.4614f, 1e-3f));
+
+    // Identity: no points, or the diagonal through both corners.
+    CHECK(isIdentity(Curve{}));
+    CHECK(sanitize(makeCurve({{0.0f, 0.0f}, {1.0f, 1.0f}})).count == 0);
+    CHECK(sanitize(makeCurve({{0.0f, 0.0f}, {0.5f, 0.5f}, {1.0f, 1.0f}})).count == 0);
+    CHECK(!isIdentity(makeCurve({{0.2f, 0.2f}, {0.8f, 0.8f}})));  // flat outside: clips
+
+    // Sanitize sorts, clamps, merges near-duplicates and drops NaN.
+    const Curve messy = sanitize(makeCurve({{1.2f, 0.9f}, {0.5f, 0.6f}, {0.501f, 0.1f}, {-0.3f, 0.1f},
+                                            {std::numeric_limits<float>::quiet_NaN(), 0.5f}}));
+    CHECK(messy.count == 3);
+    CHECK(messy.points[0] == (CurvePoint{0.0f, 0.1f}) && messy.points[1] == (CurvePoint{0.5f, 0.6f}) &&
+          messy.points[2] == (CurvePoint{1.0f, 0.9f}));
+
+    // The spline passes through its points, is monotone for rising points and
+    // does not overshoot them.
+    const Curve s = curvePreset(CurvePreset::STRONG_CONTRAST);
+    for (std::uint32_t i = 0; i < s.count; ++i) CHECK(near(evaluateCurve(s, s.points[i].x), s.points[i].y, 1e-5f));
+    float previous = -1.0f;
+    bool monotone = true;
+    for (int i = 0; i <= 1000; ++i) {
+        const float y = evaluateCurve(s, static_cast<float>(i) / 1000.0f);
+        monotone = monotone && y >= previous - 1e-6f;
+        previous = y;
+    }
+    CHECK(monotone);
+    const Curve peak = makeCurve({{0.0f, 0.0f}, {0.5f, 0.9f}, {1.0f, 0.2f}});  // not monotone: no overshoot
+    float highest = 0.0f;
+    for (int i = 0; i <= 1000; ++i) highest = std::max(highest, evaluateCurve(peak, static_cast<float>(i) / 1000.0f));
+    CHECK(highest <= 0.9f + 1e-5f);
+    CHECK(near(evaluateCurve(makeCurve({{0.2f, 0.3f}, {0.8f, 0.7f}}), 0.05f), 0.3f, 1e-6f));  // flat before the first point
+
+    // Baked tables: identity passes colours through, the contrast curve
+    // darkens shadows and brightens highlights, and HDR keeps rising.
+    const ToneCurveTables identity = bakeToneCurve(ToneCurveParams{});
+    CHECK(identity.activeMask == 0);
+    for (const Rgb& c : {Rgb{0.18f, 0.18f, 0.18f}, Rgb{0.9f, 0.02f, 0.4f}, Rgb{3.0f, 2.0f, 1.0f}}) {
+        CHECK(nearRgb(applyToneCurve(identity, c), c, 1e-6f * 4.0f));
+    }
+    ToneCurveParams contrast;
+    contrast.curves[0] = s;
+    const ToneCurveTables baked = bakeToneCurve(contrast);
+    CHECK(baked.activeMask == 1u);
+    CHECK(applyToneCurve(baked, {0.05f, 0.05f, 0.05f})[0] < 0.05f);
+    CHECK(applyToneCurve(baked, {0.6f, 0.6f, 0.6f})[0] > 0.6f);
+    const float white = applyToneCurve(baked, {1.0f, 1.0f, 1.0f})[0];
+    CHECK(near(white, 1.0f, 1e-4f));
+    CHECK(applyToneCurve(baked, {4.0f, 4.0f, 4.0f})[0] > white);
+
+    // Channel curves act on their channel only, after the composite curve.
+    ToneCurveParams warm;
+    warm.curves[static_cast<std::size_t>(CurveChannel::RED)] = makeCurve({{0.0f, 0.0f}, {0.5f, 0.6f}, {1.0f, 1.0f}});
+    warm.curves[static_cast<std::size_t>(CurveChannel::BLUE)] = makeCurve({{0.0f, 0.0f}, {0.5f, 0.4f}, {1.0f, 1.0f}});
+    const Rgb grey = applyToneCurve(bakeToneCurve(warm), {0.2f, 0.2f, 0.2f});
+    CHECK(grey[0] > 0.2f && near(grey[1], 0.2f, 1e-5f) && grey[2] < 0.2f);
+
+    // Serialized as raw bytes, like the other colour nodes.
+    const std::vector<std::byte> bytes = packParams(warm);
+    CHECK(bytes.size() == 528);
+    const ToneCurveParams back = unpackParams<ToneCurveParams>(bytes, "test");
+    CHECK(back.curves[1].count == 3 && back.curves[1].points[1] == (CurvePoint{0.5f, 0.6f}));
+}
+
 std::vector<std::string> types(const std::vector<EditNodeRecord>& stack) {
     std::vector<std::string> out;
     for (std::size_t i = 0; i < stack.size(); ++i) {
@@ -236,9 +312,10 @@ void testDevelopOrder() {
     stack = withDevelopNode(stack, {0, "hsl", {}});
     stack = withDevelopNode(stack, {0, "denoise", {}});
     stack = withDevelopNode(stack, {0, "something_else", {}});
-    CHECK((types(stack) ==
-           std::vector<std::string>{"denoise", "white_balance", "exposure", "hsl", "color_grading", "something_else"}));
-    CHECK(findDevelopNode(stack, "hsl") == std::optional<std::size_t>(3));
+    stack = withDevelopNode(stack, {0, "tone_curve", {}});
+    CHECK((types(stack) == std::vector<std::string>{"denoise", "white_balance", "exposure", "tone_curve", "hsl",
+                                                    "color_grading", "something_else"}));
+    CHECK(findDevelopNode(stack, "hsl") == std::optional<std::size_t>(4));
     CHECK(!findDevelopNode(stack, "missing"));
     CHECK(developStage("denoise") < developStage("exposure"));
 }
@@ -250,6 +327,7 @@ int main() {
     testWhiteBalance();
     testHsl();
     testColorGrading();
+    testToneCurve();
     testPacking();
     testDevelopOrder();
     if (g_failures) {

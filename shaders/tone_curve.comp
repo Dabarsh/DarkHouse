@@ -1,0 +1,61 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse — point tone curves (ToneCurveNode in color_nodes.hpp).
+//
+// Each channel is encoded with the sRGB transfer curve, looked up in the
+// composite RGB curve and then in its own channel curve (tables baked on the
+// CPU by bakeToneCurve in src/tone_curve.cpp), and decoded. Past white a
+// curve continues with its slope at white. Alpha passes through.
+
+#include "color_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D inputImage;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D outputImage;
+
+const int LUT_SIZE = 1024;  // kToneCurveLutSize
+
+// RGB, red, green, blue: LUT_SIZE entries each.
+layout(std430, set = 0, binding = 2) readonly buffer Curves {
+    float lut[4 * LUT_SIZE];
+};
+
+// Must match darkhouse::ToneCurvePush (32 bytes).
+layout(push_constant) uniform ToneCurve {
+    vec4 endSlope;
+    uint activeMask;  // bit i: curve i is not the identity
+} params;
+
+float encodeTransfer(float x) {
+    x = max(x, 0.0);
+    return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+
+float decodeTransfer(float e) {
+    e = max(e, 0.0);
+    return e <= 0.04045 ? e / 12.92 : pow((e + 0.055) / 1.055, 2.4);
+}
+
+float lookup(int curve, float e) {
+    int base = curve * LUT_SIZE;
+    if (e > 1.0) return lut[base + LUT_SIZE - 1] + (e - 1.0) * params.endSlope[curve];
+    float position = max(e, 0.0) * float(LUT_SIZE - 1);
+    int i0 = min(int(position), LUT_SIZE - 2);
+    float f = position - float(i0);
+    return mix(lut[base + i0], lut[base + i0 + 1], f);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, imageSize(outputImage)))) return;
+    vec4 source = imageLoad(inputImage, coord);
+    vec3 rgb = source.rgb;
+    for (int channel = 0; channel < 3; ++channel) {
+        float e = encodeTransfer(rgb[channel]);
+        if ((params.activeMask & 1u) != 0u) e = lookup(0, e);
+        if ((params.activeMask & (1u << (channel + 1))) != 0u) e = lookup(channel + 1, e);
+        rgb[channel] = decodeTransfer(e);
+    }
+    imageStore(outputImage, coord, vec4(storable(rgb), source.a));
+}

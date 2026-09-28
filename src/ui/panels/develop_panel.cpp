@@ -14,6 +14,7 @@ void AdjustmentsPanel::draw(PanelContext& ctx) {
     ImGui::Spacing();
 
     if (ImGui::CollapsingHeader("Basic", ImGuiTreeNodeFlags_DefaultOpen)) basic_.draw(ctx);
+    if (ImGui::CollapsingHeader("Tone Curve", ImGuiTreeNodeFlags_DefaultOpen)) curve_.draw(ctx);
     if (ImGui::CollapsingHeader("Color Mixer (HSL)", ImGuiTreeNodeFlags_DefaultOpen)) mixer_.draw(ctx);
     if (ImGui::CollapsingHeader("Color Grading", ImGuiTreeNodeFlags_DefaultOpen)) grading_.draw(ctx);
     if (ImGui::CollapsingHeader("Detail", ImGuiTreeNodeFlags_DefaultOpen)) detail_.draw(ctx);

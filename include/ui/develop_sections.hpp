@@ -11,6 +11,7 @@
 #include "denoise.hpp"
 #include "develop_stack.hpp"
 #include "render_pipeline.hpp"
+#include "tone_curve.hpp"
 #include "ui/panel.hpp"
 #include "ui/widgets.hpp"
 
@@ -82,6 +83,16 @@ private:
     NodeBinding<WhiteBalanceParams> whiteBalance_{"white_balance"};
     NodeBinding<ExposureParams> tone_{"exposure"};
     NodeBinding<ColorGradingParams> presence_{"color_grading"};  // vibrance / saturation live in the grading node
+};
+
+// Point tone curves: the composite RGB curve and one per channel, with presets.
+class ToneCurveSection {
+public:
+    void draw(PanelContext& ctx);
+
+private:
+    NodeBinding<ToneCurveParams> curves_{"tone_curve"};
+    int channel_ = 0;  // CurveChannel
 };
 
 // 8-band HSL colour mixer.

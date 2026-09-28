@@ -38,4 +38,22 @@ void ColorGradingNode::setParams(const ColorGradingParams& params) noexcept {
     push_ = colorGradingPush(params_);
 }
 
+ToneCurveNode::ToneCurveNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory)
+    : PointOperatorNode(context, shaderDirectory / "tone_curve.spv", sizeof(ToneCurvePush),
+                        PixelFormat::R16G16B16A16_SFLOAT, sizeof(ToneCurveTables::lut)) {
+    setParams(ToneCurveParams{});
+}
+
+void ToneCurveNode::updateUniforms(std::span<const std::byte> packedParams) {
+    setParams(unpackParams<ToneCurveParams>(packedParams, "ToneCurveNode::updateUniforms"));
+}
+
+void ToneCurveNode::setParams(const ToneCurveParams& params) {
+    params_ = sanitize(params);
+    tables_ = bakeToneCurve(params_);
+    push_.endSlope = tables_.endSlope;
+    push_.activeMask = tables_.activeMask;
+    markTableDirty();
+}
+
 }  // namespace darkhouse

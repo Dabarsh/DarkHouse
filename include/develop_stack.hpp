@@ -7,6 +7,7 @@
 //   denoise          sensor noise, on scene-linear data straight from the source
 //   white_balance    chromatic adaptation before any tone change
 //   exposure         exposure, highlights / shadows, contrast
+//   tone_curve       point curves (composite and per channel)
 //   hsl              colour mixer
 //   color_grading    presence and 3-way colour wheels
 //   local_adjust     masked local adjustments, on top of the global look

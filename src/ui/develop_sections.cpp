@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <span>
+#include <utility>
 
 namespace darkhouse::ui {
 namespace {
@@ -89,6 +91,56 @@ void BasicSection::draw(PanelContext& ctx) {
     presenceResult |= adjustmentSlider("Saturation", presence.saturation, -100.0f, 100.0f, 0.0f, "%+.0f",
                                        IM_COL32(128, 128, 128, 255), IM_COL32(230, 60, 60, 255));
     presence_.commit(ctx, presenceResult);
+}
+
+// -----------------------------------------------------------------------------
+// Tone curve
+// -----------------------------------------------------------------------------
+
+void ToneCurveSection::draw(PanelContext& ctx) {
+    curves_.sync(ctx.app);
+    ToneCurveParams& params = curves_.values();
+    if (sectionHeader("Point curve")) curves_.reset(ctx);
+
+    constexpr std::array<const char*, kCurveChannelCount> kNames{"RGB", "Red", "Green", "Blue"};
+    const std::array<ImU32, kCurveChannelCount> colors{IM_COL32(235, 235, 235, 255), IM_COL32(235, 80, 70, 255),
+                                                       IM_COL32(90, 200, 90, 255), IM_COL32(80, 140, 240, 255)};
+    for (int c = 0; c < static_cast<int>(kCurveChannelCount); ++c) {
+        if (c > 0) ImGui::SameLine();
+        const auto channel = static_cast<std::size_t>(c);
+        const bool edited = !isIdentity(params.curves[channel]);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(colors[channel]));
+        if (ImGui::RadioButton(kNames[channel], channel_ == c)) channel_ = c;
+        ImGui::PopStyleColor();
+        if (edited) ImGui::SetItemTooltip("%s curve edited", kNames[channel]);
+    }
+
+    SliderResult result;
+    Curve& curve = params.curves[static_cast<std::size_t>(channel_)];
+    std::array<std::pair<const Curve*, ImU32>, kCurveChannelCount - 1> others{};
+    std::size_t otherCount = 0;
+    for (std::size_t c = 0; c < kCurveChannelCount; ++c) {
+        if (c != static_cast<std::size_t>(channel_)) others[otherCount++] = {&params.curves[c], colors[c]};
+    }
+    const float size = std::clamp(ImGui::GetContentRegionAvail().x, 120.0f, 320.0f);
+    result |= curveEditor("##curve", curve, colors[static_cast<std::size_t>(channel_)], size,
+                          std::span<const std::pair<const Curve*, ImU32>>(others.data(), otherCount));
+
+    // Presets for the selected channel.
+    ImGui::SetNextItemWidth(std::min(size, ImGui::GetContentRegionAvail().x * 0.6f));
+    if (ImGui::BeginCombo("##Preset", "Preset...")) {
+        for (CurvePreset preset : {CurvePreset::LINEAR, CurvePreset::MEDIUM_CONTRAST, CurvePreset::STRONG_CONTRAST,
+                                   CurvePreset::FADED}) {
+            if (ImGui::Selectable(toString(preset))) {
+                curve = curvePreset(preset);
+                result.changed = result.released = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%u point%s", std::max(curve.count, 2u), std::max(curve.count, 2u) == 1 ? "" : "s");
+    curves_.commit(ctx, result);
 }
 
 // -----------------------------------------------------------------------------

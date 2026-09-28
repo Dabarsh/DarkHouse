@@ -2,12 +2,15 @@
 #pragma once
 
 #include "asset_manager.hpp"
+#include "tone_curve.hpp"
 #include "ui/panel.hpp"
 
 #include <imgui.h>
 
 #include <cstdint>
+#include <span>
 #include <string>
+#include <utility>
 
 namespace darkhouse::ui {
 
@@ -53,6 +56,13 @@ SliderResult compactSlider(const char* id, float& value, float min, float max, f
 // (angle) and saturation (distance from the centre, 0..100). The disc shows
 // the Oklch hues the grading shader applies. Double-click resets to neutral.
 SliderResult colorWheel(const char* id, float& hue, float& saturation, float diameter);
+
+// Point-curve editor in a square of `size` pixels: drag a point to move it,
+// click elsewhere to add one on the curve (up to kMaxCurvePoints), double-
+// or right-click an inner point to remove it. The end points stay the ends.
+// `others` are drawn faintly behind (the other channels' curves).
+SliderResult curveEditor(const char* id, Curve& curve, ImU32 color, float size,
+                         std::span<const std::pair<const Curve*, ImU32>> others = {});
 
 // sRGB display colour of an Oklch colour (lightness, chroma, hue in degrees),
 // clipped to the displayable range.

@@ -110,8 +110,8 @@ public:
     void draw(PanelContext& ctx) override;
 };
 
-// Develop adjustments: white balance, tone, presence, colour mixer, colour
-// grading and noise reduction, all live on the GPU develop graph.
+// Develop adjustments: white balance, tone, presence, tone curve, colour
+// mixer, colour grading and noise reduction, all live on the GPU develop graph.
 class AdjustmentsPanel final : public Panel {
 public:
     AdjustmentsPanel() noexcept : Panel(PanelId::ADJUSTMENTS) {}
@@ -119,6 +119,7 @@ public:
 
 private:
     BasicSection basic_;
+    ToneCurveSection curve_;
     ColorMixerSection mixer_;
     ColorGradingSection grading_;
     DetailSection detail_;

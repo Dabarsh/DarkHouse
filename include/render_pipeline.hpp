@@ -44,6 +44,9 @@ public:
 // A one-input, one-output operator: a single compute pipeline over the whole
 // image with 16x16 workgroups, its parameters in push constants. The input
 // must be rgba16f; the output is allocated in `outputFormat` at the input size.
+// A node may also have a lookup table: a read-only storage buffer at binding
+// 2, refreshed inside the command buffer (so an evaluation in flight keeps
+// its own contents) whenever the node marks it dirty.
 class PointOperatorNode : public ComputeNode {
 public:
     static constexpr std::uint32_t kWorkgroupSize = 16;  // local_size_x/y of the shaders
@@ -60,12 +63,16 @@ public:
     void executeCompute(VkCommandBuffer commandBuffer) override;
 
 protected:
-    // Loads `shaderPath` (SPIR-V). `pushConstantSize` may be 0.
+    // Loads `shaderPath` (SPIR-V). `pushConstantSize` may be 0. `tableSize`
+    // (bytes, a multiple of 4, at most 65536) adds the lookup table; 0 = none.
     PointOperatorNode(const VulkanContext& context, const std::filesystem::path& shaderPath,
-                      std::uint32_t pushConstantSize, PixelFormat outputFormat);
+                      std::uint32_t pushConstantSize, PixelFormat outputFormat, std::uint32_t tableSize = 0);
 
     // pushConstantSize bytes, read whenever the node is recorded.
     [[nodiscard]] virtual const void* pushConstants() const noexcept { return nullptr; }
+    // tableSize bytes, copied into the table by the next recording after markTableDirty().
+    [[nodiscard]] virtual const void* tableData() const noexcept { return nullptr; }
+    void markTableDirty() noexcept { tableDirty_ = true; }
 
 private:
     void writeDescriptors();
@@ -74,6 +81,9 @@ private:
     const VulkanContext& context_;
     std::uint32_t pushConstantSize_;
     PixelFormat outputFormat_;
+    std::uint32_t tableSize_;
+    GPUBuffer table_;
+    bool tableDirty_ = true;
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;

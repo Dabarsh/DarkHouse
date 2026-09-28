@@ -1,5 +1,6 @@
-// GPU colour nodes against their CPU references (color_adjust.hpp): white
-// balance, HSL colour mixer and colour grading, on an image that sweeps hue,
+// GPU colour nodes against their CPU references (color_adjust.hpp,
+// tone_curve.hpp): white balance, HSL colour mixer, colour grading and tone
+// curves, on an image that sweeps hue,
 // chroma and lightness and includes greys, black and HDR values. Runs under
 // validation; any validation error fails it.
 //
@@ -173,6 +174,53 @@ int main() {
             const ColorGradingPush push = colorGradingPush(p);
             compare(isIdentity(p) ? "identity" : p.shadows.saturation > 0.0f ? "wheels + presence" : "presence",
                     runNode(*gpu, std::move(node), image), image, [&](const Rgb& c) { return applyColorGrading(push, c); });
+        }
+
+        std::printf("tone curve\n");
+        ToneCurveParams contrast;
+        contrast.curves[0] = curvePreset(CurvePreset::STRONG_CONTRAST);
+        ToneCurveParams channels = contrast;
+        channels.curves[0] = curvePreset(CurvePreset::FADED);
+        channels.curves[1].count = 3;
+        channels.curves[1].points = {CurvePoint{0.0f, 0.05f}, CurvePoint{0.4f, 0.55f}, CurvePoint{1.0f, 1.0f}};
+        channels.curves[3].count = 4;
+        channels.curves[3].points = {CurvePoint{0.0f, 0.0f}, CurvePoint{0.3f, 0.2f}, CurvePoint{0.7f, 0.75f},
+                                     CurvePoint{0.9f, 0.85f}};
+        for (const ToneCurveParams& p : {ToneCurveParams{}, contrast, channels}) {
+            auto node = std::make_unique<ToneCurveNode>(*gpu, DARKHOUSE_SHADER_DIR);
+            node->setParams(p);
+            const ToneCurveTables tables = node->tables();
+            compare(isIdentity(p) ? "identity" : p.curves[1].count ? "composite + channels" : "strong contrast",
+                    runNode(*gpu, std::move(node), image), image, [&](const Rgb& c) { return applyToneCurve(tables, c); });
+        }
+        {
+            // A parameter change re-uploads the tables on the next evaluation.
+            auto node = std::make_unique<ToneCurveNode>(*gpu, DARKHOUSE_SHADER_DIR);
+            ToneCurveNode& curve = *node;
+            RenderPipelineGraph graph;
+            GPUTexture source = gpu->createTexture(kWidth, kHeight, PixelFormat::R16G16B16A16_SFLOAT,
+                                                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+            std::vector<std::uint16_t> halves(image.size());
+            floatsToHalves(image.data(), halves.data(), image.size());
+            const VulkanContext::RegionUpload upload{0, 0, kWidth, kHeight,
+                                                     std::as_bytes(std::span<const std::uint16_t>(halves))};
+            gpu->uploadRegions(source, std::span<const VulkanContext::RegionUpload>(&upload, 1));
+            const RenderPipelineGraph::NodeId id = graph.addNode(std::move(node));
+            graph.bindExternalInput(id, 0, source);
+            gpu->submitAndWait([&](VkCommandBuffer cmd) { graph.evaluateGraph(cmd); });
+            curve.setParams(contrast);
+            gpu->submitAndWait([&](VkCommandBuffer cmd) { graph.evaluateGraph(cmd); });
+            GPUTexture output = graph.outputOf(id);
+            const std::vector<std::byte> bytes = gpu->downloadTexture(output);
+            std::vector<std::uint16_t> out(bytes.size() / 2);
+            std::memcpy(out.data(), bytes.data(), bytes.size());
+            std::vector<float> result(out.size());
+            halvesToFloats(out.data(), result.data(), out.size());
+            const ToneCurveTables tables = curve.tables();
+            compare("re-evaluated after an edit", result, image, [&](const Rgb& c) { return applyToneCurve(tables, c); });
+            graph.clear();
+            gpu->destroyTexture(source);
         }
     } catch (const std::exception& e) {
         std::cout << "FAIL: " << e.what() << '\n';

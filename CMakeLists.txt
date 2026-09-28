@@ -56,6 +56,7 @@ set(DARKHOUSE_SHADER_SOURCES
     shaders/white_balance.comp
     shaders/hsl_adjust.comp
     shaders/color_grading.comp
+    shaders/tone_curve.comp
     shaders/mask_generate.comp
     shaders/local_adjust.comp
     shaders/denoise_down0.comp
@@ -185,6 +186,7 @@ add_library(darkhouse_core STATIC
     src/denoise_node.cpp
     src/color_adjust.cpp
     src/color_nodes.cpp
+    src/tone_curve.cpp
     src/develop_stack.cpp
     src/mask_engine.cpp
     src/local_adjust_node.cpp
@@ -204,6 +206,7 @@ add_library(darkhouse_core STATIC
     include/denoise_node.hpp
     include/color_adjust.hpp
     include/color_nodes.hpp
+    include/tone_curve.hpp
     include/develop_stack.hpp
     include/mask_engine.hpp
     include/local_adjust_node.hpp
