@@ -223,7 +223,17 @@ void VulkanContext::createInstance(const VulkanContextOptions& options) {
     info.ppEnabledLayerNames = layers.data();
     info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
     info.ppEnabledExtensionNames = extensions.data();
-    checkVk(vkCreateInstance(&info, nullptr, &instance_), "vkCreateInstance");
+    VkResult result = vkCreateInstance(&info, nullptr, &instance_);
+    if (result == VK_ERROR_LAYER_NOT_PRESENT && validationEnabled_) {
+        // The layer manifest was found but its library failed to load (e.g. a
+        // Homebrew install outside the dyld search path). Validation is a debug
+        // aid, so fall back to running without it rather than losing the GPU.
+        validationEnabled_ = false;
+        info.enabledLayerCount = 0;
+        info.ppEnabledLayerNames = nullptr;
+        result = vkCreateInstance(&info, nullptr, &instance_);
+    }
+    checkVk(result, "vkCreateInstance");
 }
 
 void VulkanContext::pickPhysicalDevice() {

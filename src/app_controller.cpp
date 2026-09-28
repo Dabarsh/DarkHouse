@@ -107,7 +107,7 @@ void DarkHouseApp::initializeGpu() {
         options.enableValidation = config_.enableValidationLayers;
         gpu_ = std::make_unique<VulkanContext>(options);
         if (config_.enableValidationLayers && !gpu_->validationEnabled()) {
-            logLine("warn", "validation requested but VK_LAYER_KHRONOS_validation is not installed");
+            logLine("warn", "validation requested but VK_LAYER_KHRONOS_validation could not be loaded; continuing without it");
         }
 
         canvasTexture_ = gpu_->createTexture(config_.canvasWidth, config_.canvasHeight,

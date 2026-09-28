@@ -23,6 +23,12 @@ option(DARKHOUSE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 # ------------------------------------------------------------------------------
 find_package(Vulkan REQUIRED)   # headers >= 1.3 are enforced in render_pipeline.hpp
 find_package(SQLite3 REQUIRED)
+# CMake 4.x renamed the imported target; 3.22 only provides the old name.
+if(TARGET SQLite3::SQLite3)
+    set(DARKHOUSE_SQLITE_TARGET SQLite3::SQLite3)
+else()
+    set(DARKHOUSE_SQLITE_TARGET SQLite::SQLite3)
+endif()
 find_package(Threads REQUIRED)
 
 # ------------------------------------------------------------------------------
@@ -46,8 +52,10 @@ foreach(shader_source IN LISTS DARKHOUSE_SHADER_SOURCES)
     set(shader_input "${CMAKE_CURRENT_SOURCE_DIR}/${shader_source}")
     set(shader_output "${DARKHOUSE_SHADER_OUTPUT_DIR}/${shader_name}.spv")
     if(DARKHOUSE_GLSLC)
+        set(DARKHOUSE_GLSL_COMPILER "${DARKHOUSE_GLSLC}")
         set(shader_command "${DARKHOUSE_GLSLC}" --target-env=vulkan1.3 -O -o "${shader_output}" "${shader_input}")
     else()
+        set(DARKHOUSE_GLSL_COMPILER "${DARKHOUSE_GLSLANG_VALIDATOR}")
         set(shader_command "${DARKHOUSE_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -o "${shader_output}"
             "${shader_input}")
     endif()
@@ -104,7 +112,7 @@ target_include_directories(DarkHouse PRIVATE
 
 target_link_libraries(DarkHouse PRIVATE
     Vulkan::Vulkan
-    SQLite::SQLite3
+    ${DARKHOUSE_SQLITE_TARGET}
     Threads::Threads)
 
 target_compile_definitions(DarkHouse PRIVATE
@@ -153,5 +161,5 @@ endif()
 message(STATUS "DarkHouse ${PROJECT_VERSION}")
 message(STATUS "  Vulkan:        ${Vulkan_LIBRARY}")
 message(STATUS "  SQLite:        ${SQLite3_VERSION}")
-message(STATUS "  GLSL compiler: ${DARKHOUSE_GLSLC}${DARKHOUSE_GLSLANG_VALIDATOR}")
+message(STATUS "  GLSL compiler: ${DARKHOUSE_GLSL_COMPILER}")
 message(STATUS "  ONNX Runtime:  ${DARKHOUSE_HAVE_ONNXRUNTIME}")
