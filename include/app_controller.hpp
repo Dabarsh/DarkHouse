@@ -223,6 +223,11 @@ public:
     // The GPU node running develop-stack entry `index`, for read-outs such as
     // DenoiseNode::statistics(); nullptr without a develop graph.
     [[nodiscard]] const ComputeNode* developNode(std::size_t index) const;
+    // GPU time of each develop-graph node (display transform included) at its
+    // last evaluation; empty when the device has no timestamps.
+    [[nodiscard]] const std::vector<RenderPipelineGraph::NodeTiming>& developTimings() const noexcept {
+        return developTimings_;
+    }
     // Increments whenever the catalog may have changed (import finished,
     // rating, flag or label written), so views know when to re-query.
     [[nodiscard]] std::uint64_t catalogRevision() const noexcept { return catalogRevision_; }
@@ -277,6 +282,7 @@ private:
     std::unique_ptr<VulkanContext> gpu_;
     GPUTexture canvasTexture_;
     std::unique_ptr<RenderPipelineGraph> developGraph_;
+    std::vector<RenderPipelineGraph::NodeTiming> developTimings_;
     bool graphDirty_ = true;
     std::uint64_t canvasGeneration_ = 0;
     bool frontEndAttached_ = false;

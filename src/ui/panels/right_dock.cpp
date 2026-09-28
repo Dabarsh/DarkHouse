@@ -563,8 +563,14 @@ void AdjustmentsPanel::drawNoiseReduction(PanelContext& ctx) {
         results[3].released |= level.released;
     }
     if (stats.levels > 0) {
-        ImGui::TextDisabled("%u detail band%s on %u x %u", stats.levels, stats.levels == 1 ? "" : "s",
-                            ctx.app.canvasWidth(), ctx.app.canvasHeight());
+        std::string line = std::to_string(stats.levels) + (stats.levels == 1 ? " detail band" : " detail bands");
+        for (const auto& timing : ctx.app.developTimings()) {
+            if (timing.id != *node) continue;
+            char gpuTime[48];
+            std::snprintf(gpuTime, sizeof gpuTime, ", %.1f ms on the GPU", timing.milliseconds);
+            line += gpuTime;
+        }
+        ImGui::TextDisabled("%s", line.c_str());
     }
 
     bool changed = false;

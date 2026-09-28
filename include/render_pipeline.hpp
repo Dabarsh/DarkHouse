@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -161,6 +162,19 @@ public:
     [[nodiscard]] bool empty() const noexcept { return nodes_.empty(); }
     void clear() noexcept;
 
+    struct NodeTiming {
+        NodeId id;
+        std::string type;     // ComputeNode::typeName()
+        double milliseconds;  // GPU time, barrier after the node included
+    };
+    // Times every node with GPU timestamps from the next evaluation on. The
+    // context must outlive the graph.
+    void enableProfiling(const VulkanContext& context);
+    // GPU time per node of the last evaluation, in execution order. Call once
+    // that submission has completed. Empty without profiling, without device
+    // support, or before the first evaluation.
+    [[nodiscard]] std::vector<NodeTiming> readTimings() const;
+
 private:
     struct Connection {
         NodeId source;
@@ -185,6 +199,10 @@ private:
     std::vector<ExternalBinding> externalInputs_;
     std::vector<NodeId> executionOrder_;
     bool orderDirty_ = true;
+
+    const VulkanContext* profilingContext_ = nullptr;
+    std::unique_ptr<GpuTimestamps> timestamps_;
+    std::vector<NodeId> timedOrder_;  // nodes the last evaluation timed, in order
 };
 
 }  // namespace darkhouse

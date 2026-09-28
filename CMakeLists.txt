@@ -331,6 +331,15 @@ if(DARKHOUSE_BUILD_TESTS)
         SKIP_RETURN_CODE 77 LABELS "preview;vulkan" TIMEOUT 300
         ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
 
+    # Benchmark (not a test); the CTest entry is a tiny smoke run.
+    add_executable(darkhouse_denoise_bench bench/denoise_bench.cpp)
+    target_link_libraries(darkhouse_denoise_bench PRIVATE darkhouse_core)
+    target_include_directories(darkhouse_denoise_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")  # test images
+    target_compile_definitions(darkhouse_denoise_bench PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+    darkhouse_apply_build_flags(darkhouse_denoise_bench)
+    add_test(NAME denoise_bench_smoke COMMAND darkhouse_denoise_bench --size 320x240 --iterations 2 --cpu)
+    set_tests_properties(denoise_bench_smoke PROPERTIES SKIP_RETURN_CODE 77 LABELS "denoise;vulkan;bench" TIMEOUT 120)
+
     add_executable(darkhouse_denoise_gpu_test tests/denoise_gpu_test.cpp)
     target_link_libraries(darkhouse_denoise_gpu_test PRIVATE darkhouse_core)
     target_compile_definitions(darkhouse_denoise_gpu_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")

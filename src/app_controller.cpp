@@ -152,6 +152,7 @@ void DarkHouseApp::initializeCanvas() {
     try {
         createCanvasTexture();
         developGraph_ = std::make_unique<RenderPipelineGraph>();
+        developGraph_->enableProfiling(*gpu_);
         rebuildDevelopGraph({});
         logLine("info", "canvas ", canvasWidth_, "x", canvasHeight_, " RGBA16F");
     } catch (const std::exception& e) {
@@ -201,6 +202,7 @@ void DarkHouseApp::initializeAi() {
 void DarkHouseApp::disableCanvas() noexcept {
     if (gpu_) gpu_->waitIdle();  // in-flight UI frames may still sample the canvas
     developGraph_.reset();
+    developTimings_.clear();
     if (gpu_) gpu_->destroyTexture(canvasTexture_);
     ++canvasGeneration_;
 }
@@ -226,6 +228,7 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
     // flight may be sampling.
     gpu_->waitIdle();
     developGraph_->clear();
+    developTimings_.clear();
     ++canvasGeneration_;
 
     std::optional<RenderPipelineGraph::NodeId> previous;
@@ -579,6 +582,7 @@ void DarkHouseApp::renderFrame(FrameContext& frame) {
     if (!developGraph_ || developGraph_->empty()) return;
     if (graphDirty_) {
         gpu_->submitAndWait([this](VkCommandBuffer commandBuffer) { developGraph_->evaluateGraph(commandBuffer); });
+        developTimings_ = developGraph_->readTimings();
         graphDirty_ = false;
     }
     const std::vector<RenderPipelineGraph::NodeId> sinks = developGraph_->sinkNodes();

@@ -106,6 +106,10 @@ public:
     [[nodiscard]] const std::string& deviceName() const noexcept { return deviceName_; }
     [[nodiscard]] VkPhysicalDeviceType deviceType() const noexcept { return deviceType_; }
     [[nodiscard]] bool validationEnabled() const noexcept { return validationEnabled_; }
+    // GPU timestamps on the universal queue (see GpuTimestamps): nanoseconds
+    // per tick, and how many low bits of a timestamp are valid (0 = none).
+    [[nodiscard]] double timestampPeriodNs() const noexcept { return timestampPeriodNs_; }
+    [[nodiscard]] std::uint32_t timestampValidBits() const noexcept { return timestampValidBits_; }
     // Validation messages of error severity seen so far (0 without validation).
     [[nodiscard]] std::uint32_t validationErrorCount() const noexcept;
 
@@ -175,8 +179,39 @@ private:
     VkPhysicalDeviceMemoryProperties memoryProperties_{};
     std::string deviceName_;
     VkPhysicalDeviceType deviceType_ = VK_PHYSICAL_DEVICE_TYPE_OTHER;
+    double timestampPeriodNs_ = 0.0;
+    std::uint32_t timestampValidBits_ = 0;
     bool validationEnabled_ = false;
     std::atomic<std::uint32_t> validationErrors_{0};  // written by the debug-utils callback
+};
+
+// Times GPU work recorded into command buffers: reset(), then write(i) at
+// points of interest, submit, and once the submission has completed read the
+// intervals. Every call is a no-op (and intervals() empty) on a device
+// without timestamp support. Must outlive the submissions that use it.
+class GpuTimestamps {
+public:
+    GpuTimestamps(const VulkanContext& context, std::uint32_t capacity);
+    ~GpuTimestamps();
+
+    GpuTimestamps(const GpuTimestamps&) = delete;
+    GpuTimestamps& operator=(const GpuTimestamps&) = delete;
+
+    [[nodiscard]] bool supported() const noexcept { return pool_ != VK_NULL_HANDLE; }
+    [[nodiscard]] std::uint32_t capacity() const noexcept { return capacity_; }
+
+    // Resets the first `count` timestamps; record it before writing them.
+    void reset(VkCommandBuffer commandBuffer, std::uint32_t count) const;
+    // Timestamp `index`, taken once all previously recorded commands finish.
+    void write(VkCommandBuffer commandBuffer, std::uint32_t index) const;
+    // Milliseconds from timestamp i to i + 1, for i < count - 1. Empty if the
+    // results are not available.
+    [[nodiscard]] std::vector<double> intervals(std::uint32_t count) const;
+
+private:
+    const VulkanContext& context_;
+    VkQueryPool pool_ = VK_NULL_HANDLE;
+    std::uint32_t capacity_ = 0;
 };
 
 // synchronization2 helpers (core in Vulkan 1.3). recordImageBarrier moves

@@ -333,6 +333,17 @@ void RenderPipelineGraph::evaluateGraph(VkCommandBuffer commandBuffer) {
     validateInputsBound();
     const std::vector<NodeId>& order = executionOrder();
 
+    // Timestamp 0 before the first node, i + 1 after node i. The pool only
+    // grows, and never while an earlier evaluation can still be running (see
+    // ComputeNode::setInputTexture: the same rule holds for the whole graph).
+    const auto timestampCount = static_cast<std::uint32_t>(order.size() + 1);
+    if (profilingContext_ && (!timestamps_ || timestamps_->capacity() < timestampCount)) {
+        timestamps_ = std::make_unique<GpuTimestamps>(*profilingContext_, std::max<std::uint32_t>(timestampCount, 16));
+    }
+    const GpuTimestamps* timer = timestamps_ && timestamps_->supported() ? timestamps_.get() : nullptr;
+    if (timer) timer->reset(commandBuffer, timestampCount);
+    timedOrder_.clear();
+
     // External inputs were written outside the graph (uploads, earlier passes).
     // Make those writes visible to compute reads and move the images to GENERAL.
     for (ExternalBinding& binding : externalInputs_) {
@@ -340,6 +351,7 @@ void RenderPipelineGraph::evaluateGraph(VkCommandBuffer commandBuffer) {
                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     }
+    if (timer) timer->write(commandBuffer, 0);
 
     for (std::size_t i = 0; i < order.size(); ++i) {
         const NodeId id = order[i];
@@ -359,7 +371,24 @@ void RenderPipelineGraph::evaluateGraph(VkCommandBuffer commandBuffer) {
         recordMemoryBarrier(commandBuffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                             last ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                             last ? VK_ACCESS_2_MEMORY_READ_BIT : VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        if (timer) timer->write(commandBuffer, static_cast<std::uint32_t>(i + 1));
     }
+    if (timer) timedOrder_ = order;
+}
+
+void RenderPipelineGraph::enableProfiling(const VulkanContext& context) { profilingContext_ = &context; }
+
+std::vector<RenderPipelineGraph::NodeTiming> RenderPipelineGraph::readTimings() const {
+    if (!timestamps_ || timedOrder_.empty()) return {};
+    const std::vector<double> intervals = timestamps_->intervals(static_cast<std::uint32_t>(timedOrder_.size() + 1));
+    if (intervals.size() != timedOrder_.size()) return {};
+    std::vector<NodeTiming> timings;
+    timings.reserve(timedOrder_.size());
+    for (std::size_t i = 0; i < timedOrder_.size(); ++i) {
+        const NodeId id = timedOrder_[i];
+        timings.push_back({id, id < nodes_.size() ? std::string(nodes_[id]->typeName()) : std::string(), intervals[i]});
+    }
+    return timings;
 }
 
 ComputeNode& RenderPipelineGraph::node(NodeId id) {
@@ -387,6 +416,7 @@ void RenderPipelineGraph::clear() noexcept {
     externalInputs_.clear();
     executionOrder_.clear();
     nodes_.clear();
+    timedOrder_.clear();  // the query pool stays for the next nodes
     orderDirty_ = true;
 }
 

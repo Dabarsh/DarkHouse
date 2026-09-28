@@ -51,6 +51,22 @@ void EnginePanel::draw(PanelContext& ctx) {
     ImGui::Text("Engine frame: %llu, dt %.2f ms", static_cast<unsigned long long>(ctx.frame.frameIndex),
                 ctx.frame.deltaSeconds * 1000.0);
     ImGui::Text("Canvas: %s", ctx.app.canvasAvailable() ? "GPU develop graph" : "unavailable");
+    if (ctx.app.canvasAvailable()) {
+        ImGui::Text("Document: %u x %u", ctx.app.canvasWidth(), ctx.app.canvasHeight());
+        const auto& timings = ctx.app.developTimings();
+        if (timings.empty()) {
+            ImGui::TextDisabled("Develop graph GPU time: not measured (no timestamp support)");
+        } else {
+            // One line per node, then the total: what the last re-render cost on the GPU.
+            double total = 0.0;
+            for (const auto& timing : timings) total += timing.milliseconds;
+            const double megapixels = static_cast<double>(ctx.app.canvasWidth()) * ctx.app.canvasHeight() / 1e6;
+            ImGui::Text("Develop graph GPU time: %.2f ms (%.0f MP/s)", total, total > 0.0 ? megapixels / total * 1e3 : 0.0);
+            ImGui::Indent();
+            for (const auto& timing : timings) ImGui::Text("%-14s %8.2f ms", timing.type.c_str(), timing.milliseconds);
+            ImGui::Unindent();
+        }
+    }
     ImGui::Text("Imports: %zu ok, %zu failed, %zu pending", ctx.app.summary().importsSucceeded,
                 ctx.app.summary().importsFailed, ctx.app.pendingImportCount());
 }

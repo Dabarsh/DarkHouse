@@ -389,6 +389,12 @@ void VulkanContext::pickPhysicalDevice() {
             computeQueueFamily_ = *family;
             deviceName_ = properties.deviceName;
             deviceType_ = properties.deviceType;
+            timestampPeriodNs_ = properties.limits.timestampPeriod;
+            std::uint32_t familyCount = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, nullptr);
+            std::vector<VkQueueFamilyProperties> families(familyCount);
+            vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.data());
+            timestampValidBits_ = *family < familyCount ? families[*family].timestampValidBits : 0;
         }
     }
     if (physicalDevice_ == VK_NULL_HANDLE) {
@@ -721,6 +727,52 @@ void VulkanContext::clearTexture(GPUTexture& texture, float r, float g, float b,
                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                             VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     });
+}
+
+// -----------------------------------------------------------------------------
+// GpuTimestamps
+// -----------------------------------------------------------------------------
+
+GpuTimestamps::GpuTimestamps(const VulkanContext& context, std::uint32_t capacity) : context_(context) {
+    if (capacity == 0 || context_.timestampValidBits() == 0 || context_.timestampPeriodNs() <= 0.0) return;
+    VkQueryPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = capacity;
+    checkVk(vkCreateQueryPool(context_.device(), &info, nullptr, &pool_), "vkCreateQueryPool");
+    capacity_ = capacity;
+}
+
+GpuTimestamps::~GpuTimestamps() {
+    if (pool_ != VK_NULL_HANDLE) vkDestroyQueryPool(context_.device(), pool_, nullptr);
+}
+
+void GpuTimestamps::reset(VkCommandBuffer commandBuffer, std::uint32_t count) const {
+    if (pool_ != VK_NULL_HANDLE) vkCmdResetQueryPool(commandBuffer, pool_, 0, std::min(count, capacity_));
+}
+
+void GpuTimestamps::write(VkCommandBuffer commandBuffer, std::uint32_t index) const {
+    if (pool_ != VK_NULL_HANDLE && index < capacity_) {
+        vkCmdWriteTimestamp2(commandBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool_, index);
+    }
+}
+
+std::vector<double> GpuTimestamps::intervals(std::uint32_t count) const {
+    count = std::min(count, capacity_);
+    if (pool_ == VK_NULL_HANDLE || count < 2) return {};
+    std::vector<std::uint64_t> ticks(count);
+    if (vkGetQueryPoolResults(context_.device(), pool_, 0, count, ticks.size() * sizeof(std::uint64_t), ticks.data(),
+                              sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+        return {};  // VK_NOT_READY: not submitted or not finished
+    }
+    const std::uint32_t bits = context_.timestampValidBits();
+    const std::uint64_t mask = bits >= 64 ? ~std::uint64_t{0} : (std::uint64_t{1} << bits) - 1;
+    std::vector<double> out(count - 1);
+    for (std::uint32_t i = 0; i + 1 < count; ++i) {
+        const std::uint64_t delta = ((ticks[i + 1] & mask) - (ticks[i] & mask)) & mask;  // wraps within the valid bits
+        out[i] = static_cast<double>(delta) * context_.timestampPeriodNs() * 1e-6;
+    }
+    return out;
 }
 
 }  // namespace darkhouse
