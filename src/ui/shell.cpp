@@ -61,6 +61,7 @@ std::unique_ptr<Panel> makePanel(PanelId id) {
     case PanelId::LAYERS: return std::make_unique<LayersPanel>();
     case PanelId::ADJUSTMENTS: return std::make_unique<AdjustmentsPanel>();
     case PanelId::ENGINE: return std::make_unique<EnginePanel>();
+    case PanelId::MASKING: return std::make_unique<MaskingPanel>();
     }
     return nullptr;
 }
@@ -86,14 +87,16 @@ void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngin
     pollImportScan(app);
     library_.update(app);
     ShellRequests requests;
-    PanelContext ctx{app, frame, gui, library_, requests};
+    PanelContext ctx{app, frame, gui, library_, requests, masking_};
 
     handleShortcuts(ctx);
     // Bars shrink the main viewport's work area, so they come before the dockspace.
     drawMainMenuBar(ctx);
     drawStatusBar(ctx);
     layout_.submit(frame.mode);
+    masking_.panelVisible = false;
     drawPanels(ctx);
+    syncMaskOverlay(ctx);
     if (requests.openImportDialog) openImportDialog_ = true;
 
     drawImportDialog(ctx);

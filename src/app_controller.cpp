@@ -1,5 +1,7 @@
 #include "app_controller.hpp"
 
+#include "develop_stack.hpp"
+#include "local_adjust_node.hpp"
 #include "parallel.hpp"
 
 #include <algorithm>
@@ -251,6 +253,7 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
         developGraph_->addNode(std::make_unique<DisplayTransformNode>(*gpu_, config_.shaderDirectory));
     developGraph_->connectNodes(*previous, display, 0);
     graphDirty_ = true;
+    applyMaskOverlay();  // a viewing aid survives the rebuild
 }
 
 // -----------------------------------------------------------------------------
@@ -425,6 +428,24 @@ void DarkHouseApp::handle(const SetDevelopStackEvent& event) {
         if (event.persist && !activeAssetId_.empty()) assets_->saveEditStack(activeAssetId_, developStack_);
     } catch (const std::exception& e) {
         logLine("error", "develop stack not saved for ", activeAssetId_, ": ", e.what());
+    }
+}
+
+void DarkHouseApp::handle(const SetMaskOverlayEvent& event) {
+    if (event.maskIndex == maskOverlay_) return;
+    maskOverlay_ = event.maskIndex;
+    applyMaskOverlay();
+}
+
+void DarkHouseApp::applyMaskOverlay() {
+    if (!developGraph_) return;
+    const std::optional<std::size_t> index = findDevelopNode(developStack_, LocalAdjustNode::kTypeName);
+    if (!index || *index >= developGraph_->nodeCount()) return;
+    if (auto* node = dynamic_cast<LocalAdjustNode*>(&developGraph_->node(static_cast<RenderPipelineGraph::NodeId>(*index)))) {
+        if (node->overlay() != maskOverlay_) {
+            node->setOverlay(maskOverlay_);
+            graphDirty_ = true;
+        }
     }
 }
 

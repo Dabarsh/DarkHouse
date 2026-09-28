@@ -1,5 +1,6 @@
 // Center dock: library grid, viewport (develop output), filmstrip.
 
+#include "ui/masking.hpp"
 #include "ui/panels.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -222,11 +223,15 @@ void ViewportPanel::draw(PanelContext& ctx) {
         pan_ = cursor - canvasPoint * newScale - viewCenter;
         scale = zoom_ = newScale;
     }
-    if (ImGui::IsItemActive() && (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f) ||
+    // An active masking tool (brush, gradient, eyedropper) takes the left
+    // button; the view then pans with the middle button only.
+    const CanvasView toolView{viewCenter + pan_ - imageSize * scale * 0.5f, scale, imageSize};
+    const bool toolUsed = maskingViewportInput(ctx, toolView, hovered, ImGui::IsItemActive());
+    if (ImGui::IsItemActive() && ((!toolUsed && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) ||
                                   ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))) {
         pan_ += glm::vec2(io.MouseDelta);
     }
-    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    if (!toolUsed && hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         zoom_ = zoom_ > 0.0f ? 0.0f : 1.0f;  // fit <-> 100 %
         scale = zoom_ > 0.0f ? zoom_ : fitScale;
         pan_ = glm::vec2(0.0f);
@@ -255,6 +260,7 @@ void ViewportPanel::draw(PanelContext& ctx) {
     }
     drawList->AddImage(texture, imageMin, imageMax);
     drawList->AddRect(imageMin - glm::vec2(1.0f), imageMax + glm::vec2(1.0f), IM_COL32(0, 0, 0, 160));
+    drawMaskingOverlay(ctx, CanvasView{imageMin, scale, imageSize}, hovered);
     drawList->PopClipRect();
     drawPhotoStatus(ctx, origin, region);
 

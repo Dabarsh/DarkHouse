@@ -110,8 +110,14 @@ struct SetDevelopStackEvent {
     std::vector<EditNodeRecord> stack;
     bool persist = true;
 };
+// Shows one mask of the local_adjust node as a red overlay on the canvas
+// (-1 hides it). A viewing aid for the masking tools; not saved.
+struct SetMaskOverlayEvent {
+    int maskIndex = -1;
+};
 using AppEvent = std::variant<QuitEvent, SwitchModeEvent, ImportFilesEvent, SetRatingEvent, SetFlagEvent,
-                              SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent, SetDevelopStackEvent>;
+                              SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent, SetDevelopStackEvent,
+                              SetMaskOverlayEvent>;
 
 struct FrameContext {
     std::uint64_t frameIndex = 0;
@@ -264,6 +270,8 @@ private:
     void handle(const OpenAssetEvent& event);
     void handle(const SetDevelopParamsEvent& event);
     void handle(const SetDevelopStackEvent& event);
+    void handle(const SetMaskOverlayEvent& event);
+    void applyMaskOverlay();
     void pollImports();
     void startPhotoLoad(const AssetRecord& asset);
     void pollPhotoLoad();
@@ -288,6 +296,7 @@ private:
     std::unique_ptr<RenderPipelineGraph> developGraph_;
     std::vector<RenderPipelineGraph::NodeTiming> developTimings_;
     VulkanContext::Submission developSubmission_;  // the develop evaluation in flight, if any
+    int maskOverlay_ = -1;                          // mask shown as an overlay (SetMaskOverlayEvent)
     bool graphDirty_ = true;
     std::uint64_t canvasGeneration_ = 0;
     bool frontEndAttached_ = false;

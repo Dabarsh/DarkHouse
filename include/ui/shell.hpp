@@ -14,6 +14,7 @@
 #include "gui_engine.hpp"
 #include "import_scan.hpp"
 #include "ui/library_model.hpp"
+#include "ui/masking.hpp"
 #include "ui/panel.hpp"
 #include "ui/workspace_layout.hpp"
 
@@ -49,6 +50,7 @@ private:
 
     WorkspaceLayoutManager layout_;
     LibraryModel library_;
+    MaskingState masking_;  // shared by the Masking panel and the viewport's masking tools
     std::array<std::unique_ptr<Panel>, kPanelCount> panels_;
 
     bool openImportDialog_ = false;

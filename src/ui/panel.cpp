@@ -13,11 +13,12 @@ constexpr std::array<PanelInfo, kPanelCount> kPanels{{
     {PanelId::LAYERS, "Layers", "Layers", "Unified stack of parametric, raster, vector and smart-object layers"},
     {PanelId::ADJUSTMENTS, "Adjustments", "Adjustments", "Tone, HSL and colour adjustments of the active layer"},
     {PanelId::ENGINE, "Engine", "Engine", "GPU, swapchain and frame timing diagnostics"},
+    {PanelId::MASKING, "Masking", "Masking", "Masks for local adjustments: brush, gradients, colour and luminance ranges"},
 }};
 
 constexpr std::array<PanelId, kPanelCount> kAllPanels{
     PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA,    PanelId::ASSET_GRID, PanelId::VIEWPORT,
-    PanelId::FILMSTRIP,   PanelId::LAYERS, PanelId::ADJUSTMENTS, PanelId::ENGINE,
+    PanelId::FILMSTRIP,   PanelId::LAYERS, PanelId::ADJUSTMENTS, PanelId::ENGINE,     PanelId::MASKING,
 };
 
 const char* presentModeName(VkPresentModeKHR mode) {

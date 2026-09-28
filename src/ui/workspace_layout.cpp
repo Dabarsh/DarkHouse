@@ -55,11 +55,11 @@ void WorkspaceLayoutManager::applyDefaultPanelSet(Workspace& workspace) {
         break;
     case AppMode::CANVAS:
         show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::VIEWPORT, PanelId::FILMSTRIP,
-              PanelId::LAYERS, PanelId::ADJUSTMENTS});
+              PanelId::LAYERS, PanelId::ADJUSTMENTS, PanelId::MASKING});
         break;
     case AppMode::HYBRID_SPLIT:
         show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT,
-              PanelId::FILMSTRIP, PanelId::LAYERS, PanelId::ADJUSTMENTS});
+              PanelId::FILMSTRIP, PanelId::LAYERS, PanelId::ADJUSTMENTS, PanelId::MASKING});
         break;
     }
 }
@@ -157,7 +157,7 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
     case AppMode::CANVAS: {
         // | Collections |  Viewport       | Layers      |
         // | Metadata    |-----------------|             |
-        // |             |  Filmstrip      | Adjustments |
+        // |             |  Filmstrip      | Adjustments |  (Masking tabbed with Adjustments)
         ImGuiID right = splitWidth(center, ImGuiDir_Right, 360.0f, 0.18f, 0.30f);
         const ImGuiID adjustments = split(right, ImGuiDir_Down, 0.55f);
         ImGuiID left = splitWidth(center, ImGuiDir_Left, 300.0f, 0.15f, 0.28f);
@@ -169,13 +169,14 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         dock(PanelId::FILMSTRIP, filmstrip);
         dock(PanelId::LAYERS, right);
         dock(PanelId::ADJUSTMENTS, adjustments);
+        dock(PanelId::MASKING, adjustments);
         dock(PanelId::VIEWPORT, center);
         break;
     }
     case AppMode::HYBRID_SPLIT: {
         // | Collections | Library | Viewport | Layers      |
         // | Metadata    |------------------- |             |
-        // |             |      Filmstrip     | Adjustments |
+        // |             |      Filmstrip     | Adjustments |  (Masking tabbed with Adjustments)
         ImGuiID right = splitWidth(center, ImGuiDir_Right, 340.0f, 0.17f, 0.28f);
         const ImGuiID adjustments = split(right, ImGuiDir_Down, 0.55f);
         ImGuiID left = splitWidth(center, ImGuiDir_Left, 280.0f, 0.14f, 0.26f);
@@ -189,6 +190,7 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         dock(PanelId::ASSET_GRID, grid);
         dock(PanelId::LAYERS, right);
         dock(PanelId::ADJUSTMENTS, adjustments);
+        dock(PanelId::MASKING, adjustments);
         dock(PanelId::VIEWPORT, center);
         break;
     }

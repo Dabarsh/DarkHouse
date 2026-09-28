@@ -2,7 +2,7 @@
 //
 //   Left dock    CollectionsPanel, SearchPanel, MetadataPanel
 //   Center dock  LibraryGridPanel, ViewportPanel, FilmstripPanel
-//   Right dock   LayersPanel, AdjustmentsPanel
+//   Right dock   LayersPanel, AdjustmentsPanel, MaskingPanel
 //
 // Catalog panels share one LibraryModel (collection, filter, selection) via
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
@@ -114,6 +114,18 @@ private:
     ColorMixerSection mixer_;
     ColorGradingSection grading_;
     DetailSection detail_;
+};
+
+// Local adjustments: the photo's mask stack (brush, gradients, ranges and the
+// AI placeholders), each mask's components with add / subtract / intersect,
+// invert and opacity, the brush options and the edits each mask applies.
+class MaskingPanel final : public Panel {
+public:
+    MaskingPanel() noexcept : Panel(PanelId::MASKING) {}
+    void draw(PanelContext& ctx) override;
+
+private:
+    int maskCounter_ = 0;
 };
 
 }  // namespace darkhouse::ui
