@@ -3,9 +3,12 @@
 #include "vulkan_utils.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -80,9 +83,13 @@ bool deviceExtensionAvailable(VkPhysicalDevice device, const char* name) {
                        [&](const VkExtensionProperties& ext) { return std::strcmp(ext.extensionName, name) == 0; });
 }
 
-// Prefers a universal (graphics + compute) family so the future UI front-end
-// can present from the queue the develop graph runs on.
-std::optional<std::uint32_t> findComputeQueueFamily(VkPhysicalDevice device) {
+void logInfo(const std::string& message) { std::clog << "[DarkHouse] info: " << message << '\n'; }
+
+// Picks the queue family the context runs everything on.
+// Headless: prefers a universal (graphics + compute) family, else compute-only.
+// Presenting: requires graphics + compute + present support on `surface`, so
+// the UI, the develop graph and presentation share one queue.
+std::optional<std::uint32_t> findQueueFamily(VkPhysicalDevice device, VkSurfaceKHR surface) {
     std::uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
@@ -91,10 +98,79 @@ std::optional<std::uint32_t> findComputeQueueFamily(VkPhysicalDevice device) {
     for (std::uint32_t i = 0; i < count; ++i) {
         const VkQueueFlags flags = families[i].queueFlags;
         if ((flags & VK_QUEUE_COMPUTE_BIT) == 0) continue;
-        if (flags & VK_QUEUE_GRAPHICS_BIT) return i;
+        const bool universal = (flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+        if (surface != VK_NULL_HANDLE) {
+            VkBool32 presentable = VK_FALSE;
+            if (!universal || vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentable) != VK_SUCCESS ||
+                presentable != VK_TRUE) {
+                continue;
+            }
+            return i;
+        }
+        if (universal) return i;
         if (!computeOnly) computeOnly = i;
     }
-    return computeOnly;
+    return surface != VK_NULL_HANDLE ? std::nullopt : computeOnly;
+}
+
+VkDeviceSize deviceLocalMemory(VkPhysicalDevice device) {
+    VkPhysicalDeviceMemoryProperties memory{};
+    vkGetPhysicalDeviceMemoryProperties(device, &memory);
+    VkDeviceSize total = 0;
+    for (std::uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
+        if (memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) total += memory.memoryHeaps[i].size;
+    }
+    return total;
+}
+
+int deviceTypeScore(VkPhysicalDeviceType type) {
+    switch (type) {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 3;
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 2;
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return 1;
+    default: return 0;  // CPU implementations (lavapipe, SwiftShader) and others
+    }
+}
+
+// Validation layers ship with the Vulkan SDK, which is often not installed
+// system-wide. When the loader cannot see the layer, point it at the manifest
+// directory CMake found at configure time (DARKHOUSE_VK_LAYER_DIR), unless the
+// user already steers layer discovery through the environment.
+void makeValidationLayerDiscoverable() {
+#ifdef DARKHOUSE_VK_LAYER_DIR
+    if (instanceLayerAvailable(kValidationLayer)) return;
+    if (std::getenv("VK_LAYER_PATH") || std::getenv("VK_ADD_LAYER_PATH")) return;
+#if defined(_WIN32)
+    _putenv_s("VK_ADD_LAYER_PATH", DARKHOUSE_VK_LAYER_DIR);
+#else
+    setenv("VK_ADD_LAYER_PATH", DARKHOUSE_VK_LAYER_DIR, 0);
+#endif
+    logInfo(std::string("validation: searching for layers in ") + DARKHOUSE_VK_LAYER_DIR);
+#endif
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL onDebugMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                              VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* data,
+                                              void* userData) {
+    const bool error = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
+    if (error && userData) static_cast<std::atomic<std::uint32_t>*>(userData)->fetch_add(1);
+    std::ostringstream line;
+    line << "[DarkHouse] " << (error ? "error" : "warn") << ": vulkan: "
+         << (data && data->pMessageIdName ? data->pMessageIdName : "") << (data && data->pMessageIdName ? ": " : "")
+         << (data && data->pMessage ? data->pMessage : "(no message)") << '\n';
+    std::clog << line.str();
+    return VK_FALSE;  // never abort the call that triggered the message
+}
+
+VkDebugUtilsMessengerCreateInfoEXT debugMessengerInfo(std::atomic<std::uint32_t>* errorCounter) {
+    VkDebugUtilsMessengerCreateInfoEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    info.pfnUserCallback = onDebugMessage;
+    info.pUserData = errorCounter;
+    return info;
 }
 
 }  // namespace
@@ -164,6 +240,11 @@ void recordMemoryBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 sr
 VulkanContext::VulkanContext(const VulkanContextOptions& options) {
     try {
         createInstance(options);
+        createDebugMessenger();
+        if (options.createSurface) {
+            surface_ = options.createSurface(instance_);
+            if (surface_ == VK_NULL_HANDLE) throw std::runtime_error("createSurface returned VK_NULL_HANDLE");
+        }
         pickPhysicalDevice();
         createDevice();
     } catch (...) {
@@ -174,6 +255,12 @@ VulkanContext::VulkanContext(const VulkanContextOptions& options) {
 
 VulkanContext::~VulkanContext() { destroy(); }
 
+std::uint32_t VulkanContext::validationErrorCount() const noexcept { return validationErrors_.load(); }
+
+void VulkanContext::waitIdle() const noexcept {
+    if (device_ != VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
+}
+
 void VulkanContext::createInstance(const VulkanContextOptions& options) {
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -183,41 +270,64 @@ void VulkanContext::createInstance(const VulkanContextOptions& options) {
     app.engineVersion = VK_MAKE_API_VERSION(0, 0, 1, 0);
     app.apiVersion = VK_API_VERSION_1_3;
 
-    std::vector<const char*> layers;
-    std::vector<const char*> extensions;
-    VkInstanceCreateFlags flags = 0;
-
-    if (options.enableValidation && instanceLayerAvailable(kValidationLayer)) {
-        layers.push_back(kValidationLayer);
-        validationEnabled_ = true;
+    for (const std::string& name : options.instanceExtensions) {
+        if (!instanceExtensionAvailable(name.c_str())) {
+            throw std::runtime_error("required Vulkan instance extension " + name + " is not available");
+        }
     }
+    if (options.enableValidation) makeValidationLayerDiscoverable();
+    const bool debugUtilsAvailable = instanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
+    auto tryCreate = [&](bool withValidation) {
+        std::vector<const char*> layers;
+        std::vector<const char*> extensions;
+        VkInstanceCreateFlags flags = 0;
+        for (const std::string& name : options.instanceExtensions) extensions.push_back(name.c_str());
 #ifdef VK_KHR_portability_enumeration
-    // Portability drivers such as MoltenVK are only enumerated when asked for explicitly.
-    if (instanceExtensionAvailable(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
-        extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-        flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-    }
+        // Portability drivers such as MoltenVK are only enumerated when asked for explicitly.
+        if (instanceExtensionAvailable(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+            extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+            flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        }
 #endif
+        // Chained into vkCreateInstance so instance creation and destruction
+        // are validated as well, not only the calls in between.
+        const VkDebugUtilsMessengerCreateInfoEXT messengerInfo = debugMessengerInfo(&validationErrors_);
+        const bool useMessenger = withValidation && debugUtilsAvailable;
+        if (withValidation) layers.push_back(kValidationLayer);
+        if (useMessenger) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
-    VkInstanceCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    info.flags = flags;
-    info.pApplicationInfo = &app;
-    info.enabledLayerCount = static_cast<std::uint32_t>(layers.size());
-    info.ppEnabledLayerNames = layers.data();
-    info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
-    info.ppEnabledExtensionNames = extensions.data();
-    VkResult result = vkCreateInstance(&info, nullptr, &instance_);
+        VkInstanceCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        info.pNext = useMessenger ? &messengerInfo : nullptr;
+        info.flags = flags;
+        info.pApplicationInfo = &app;
+        info.enabledLayerCount = static_cast<std::uint32_t>(layers.size());
+        info.ppEnabledLayerNames = layers.data();
+        info.enabledExtensionCount = static_cast<std::uint32_t>(extensions.size());
+        info.ppEnabledExtensionNames = extensions.data();
+        return vkCreateInstance(&info, nullptr, &instance_);
+    };
+
+    validationEnabled_ = options.enableValidation && instanceLayerAvailable(kValidationLayer);
+    VkResult result = tryCreate(validationEnabled_);
     if (result == VK_ERROR_LAYER_NOT_PRESENT && validationEnabled_) {
         // The layer manifest was found but its library failed to load (e.g. a
         // Homebrew install outside the dyld search path). Validation is a debug
         // aid, so fall back to running without it rather than losing the GPU.
         validationEnabled_ = false;
-        info.enabledLayerCount = 0;
-        info.ppEnabledLayerNames = nullptr;
-        result = vkCreateInstance(&info, nullptr, &instance_);
+        result = tryCreate(false);
     }
     checkVk(result, "vkCreateInstance");
+}
+
+void VulkanContext::createDebugMessenger() {
+    if (!validationEnabled_ || !instanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) return;
+    const auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT"));
+    if (!create) return;
+    const VkDebugUtilsMessengerCreateInfoEXT info = debugMessengerInfo(&validationErrors_);
+    checkVk(create(instance_, &info, nullptr, &debugMessenger_), "vkCreateDebugUtilsMessengerEXT");
 }
 
 void VulkanContext::pickPhysicalDevice() {
@@ -226,39 +336,64 @@ void VulkanContext::pickPhysicalDevice() {
     std::vector<VkPhysicalDevice> devices(count);
     checkVk(vkEnumeratePhysicalDevices(instance_, &count, devices.data()), "vkEnumeratePhysicalDevices");
 
-    int bestScore = -1;
+    const bool presenting = surface_ != VK_NULL_HANDLE;
+    std::ostringstream rejected;
+    int bestTypeScore = -1;
+    VkDeviceSize bestMemory = 0;
     for (VkPhysicalDevice candidate : devices) {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(candidate, &properties);
-        if (properties.apiVersion < VK_API_VERSION_1_3) continue;
+        auto reject = [&](const char* reason) { rejected << "\n  " << properties.deviceName << ": " << reason; };
 
-        const auto family = findComputeQueueFamily(candidate);
-        if (!family) continue;
-
+        if (properties.apiVersion < VK_API_VERSION_1_3) {
+            reject("Vulkan 1.3 not supported");
+            continue;
+        }
         VkPhysicalDeviceVulkan13Features features13{};
         features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         VkPhysicalDeviceFeatures2 features{};
         features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         features.pNext = &features13;
         vkGetPhysicalDeviceFeatures2(candidate, &features);
-        if (features13.synchronization2 != VK_TRUE) continue;
-
-        int score = 0;
-        switch (properties.deviceType) {
-        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: score = 3; break;
-        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: score = 2; break;
-        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: score = 1; break;
-        default: score = 0; break;
+        if (features13.synchronization2 != VK_TRUE || features13.dynamicRendering != VK_TRUE) {
+            reject("synchronization2 or dynamicRendering missing");
+            continue;
         }
-        if (score > bestScore) {
-            bestScore = score;
+        if (presenting) {
+            if (!deviceExtensionAvailable(candidate, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+                reject("VK_KHR_swapchain missing");
+                continue;
+            }
+            std::uint32_t formatCount = 0;
+            std::uint32_t modeCount = 0;
+            vkGetPhysicalDeviceSurfaceFormatsKHR(candidate, surface_, &formatCount, nullptr);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(candidate, surface_, &modeCount, nullptr);
+            if (formatCount == 0 || modeCount == 0) {
+                reject("cannot present to this window surface");
+                continue;
+            }
+        }
+        const auto family = findQueueFamily(candidate, surface_);
+        if (!family) {
+            reject(presenting ? "no queue family with graphics + compute + present" : "no compute queue family");
+            continue;
+        }
+
+        // Discrete GPUs first; among equals, the one with the most VRAM.
+        const int typeScore = deviceTypeScore(properties.deviceType);
+        const VkDeviceSize memory = deviceLocalMemory(candidate);
+        if (typeScore > bestTypeScore || (typeScore == bestTypeScore && memory > bestMemory)) {
+            bestTypeScore = typeScore;
+            bestMemory = memory;
             physicalDevice_ = candidate;
             computeQueueFamily_ = *family;
             deviceName_ = properties.deviceName;
+            deviceType_ = properties.deviceType;
         }
     }
     if (physicalDevice_ == VK_NULL_HANDLE) {
-        throw std::runtime_error("no Vulkan 1.3 device with a compute queue and synchronization2 was found");
+        throw std::runtime_error(std::string("no suitable Vulkan 1.3 device found") +
+                                 (count == 0 ? " (no devices enumerated)" : rejected.str()));
     }
     vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &memoryProperties_);
 }
@@ -271,16 +406,20 @@ void VulkanContext::createDevice() {
     queueInfo.queueCount = 1;
     queueInfo.pQueuePriorities = &priority;
 
+    // Both are mandatory in Vulkan 1.3: synchronization2 for every barrier in
+    // the engine, dynamic rendering so UI passes need no VkRenderPass objects.
     VkPhysicalDeviceVulkan13Features features13{};
     features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     features13.synchronization2 = VK_TRUE;
+    features13.dynamicRendering = VK_TRUE;
     VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features.pNext = &features13;
 
+    std::vector<const char*> extensions;
+    if (surface_ != VK_NULL_HANDLE) extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     // The spec requires enabling VK_KHR_portability_subset whenever the device
     // exposes it (MoltenVK does).
-    std::vector<const char*> extensions;
     if (deviceExtensionAvailable(physicalDevice_, kPortabilitySubsetExtension)) {
         extensions.push_back(kPortabilitySubsetExtension);
     }
@@ -308,9 +447,19 @@ void VulkanContext::destroy() noexcept {
         if (commandPool_ != VK_NULL_HANDLE) vkDestroyCommandPool(device_, commandPool_, nullptr);
         vkDestroyDevice(device_, nullptr);
     }
-    if (instance_ != VK_NULL_HANDLE) vkDestroyInstance(instance_, nullptr);
+    if (instance_ != VK_NULL_HANDLE) {
+        if (surface_ != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        if (debugMessenger_ != VK_NULL_HANDLE) {
+            const auto destroyMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+                vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT"));
+            if (destroyMessenger) destroyMessenger(instance_, debugMessenger_, nullptr);
+        }
+        vkDestroyInstance(instance_, nullptr);
+    }
     commandPool_ = VK_NULL_HANDLE;
     device_ = VK_NULL_HANDLE;
+    surface_ = VK_NULL_HANDLE;
+    debugMessenger_ = VK_NULL_HANDLE;
     instance_ = VK_NULL_HANDLE;
 }
 

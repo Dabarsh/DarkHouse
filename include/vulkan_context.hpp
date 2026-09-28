@@ -4,16 +4,24 @@
 // graph runs on, plus texture and upload helpers. Images are scene-referred
 // linear RGBA16F throughout, which leaves headroom for HDR RAW data and keeps
 // bandwidth at half of FP32.
+//
+// The same context drives the desktop UI: when presentation is requested it
+// also owns the window surface, selects a queue family that can present to
+// it, and enables VK_KHR_swapchain and dynamic rendering. Compute, graphics
+// and present then share one queue, so the viewport can sample develop
+// outputs without cross-queue ownership transfers.
 #pragma once
 
 #include <vulkan/vulkan.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <span>
 #include <string>
+#include <vector>
 
 #ifndef VK_API_VERSION_1_3
 #error "DarkHouse requires Vulkan 1.3 headers (VK_API_VERSION_1_3 is not defined)"
@@ -48,12 +56,24 @@ struct GPUTexture {
 
 struct VulkanContextOptions {
     std::string applicationName = "DarkHouse";
-    bool enableValidation = false;  // uses VK_LAYER_KHRONOS_validation when it is installed
+    // Uses VK_LAYER_KHRONOS_validation when it is installed and routes its
+    // messages to the DarkHouse log through VK_EXT_debug_utils.
+    bool enableValidation = false;
+
+    // Presentation (optional). Leave both empty for a headless compute context.
+    // instanceExtensions: extra instance extensions, e.g. from
+    //   PlatformWindow::requiredInstanceExtensions().
+    // createSurface: called once, right after the instance is created. The
+    //   context takes ownership of the returned surface.
+    std::vector<std::string> instanceExtensions;
+    std::function<VkSurfaceKHR(VkInstance)> createSurface;
 };
 
-// Instance, device and compute queue. Selects a Vulkan 1.3 device with
-// synchronization2 and prefers discrete GPUs. On macOS it enables portability
-// enumeration so MoltenVK is found.
+// Instance, device and one universal queue. Selects a Vulkan 1.3 device with
+// synchronization2 and dynamic rendering (plus swapchain and present support
+// when a surface is requested) and prefers discrete GPUs, then the most
+// device-local memory. On macOS it enables portability enumeration so
+// MoltenVK is found.
 // Not thread-safe: use it from the render thread only.
 class VulkanContext {
 public:
@@ -66,10 +86,25 @@ public:
     [[nodiscard]] VkInstance instance() const noexcept { return instance_; }
     [[nodiscard]] VkPhysicalDevice physicalDevice() const noexcept { return physicalDevice_; }
     [[nodiscard]] VkDevice device() const noexcept { return device_; }
+    // The universal queue: compute always; graphics and present when presenting.
     [[nodiscard]] VkQueue computeQueue() const noexcept { return computeQueue_; }
     [[nodiscard]] std::uint32_t computeQueueFamily() const noexcept { return computeQueueFamily_; }
+    [[nodiscard]] VkQueue queue() const noexcept { return computeQueue_; }
+    [[nodiscard]] std::uint32_t queueFamily() const noexcept { return computeQueueFamily_; }
+    [[nodiscard]] std::uint32_t apiVersion() const noexcept { return VK_API_VERSION_1_3; }
     [[nodiscard]] const std::string& deviceName() const noexcept { return deviceName_; }
+    [[nodiscard]] VkPhysicalDeviceType deviceType() const noexcept { return deviceType_; }
     [[nodiscard]] bool validationEnabled() const noexcept { return validationEnabled_; }
+    // Validation messages of error severity seen so far (0 without validation).
+    [[nodiscard]] std::uint32_t validationErrorCount() const noexcept;
+
+    // VK_NULL_HANDLE for a headless context.
+    [[nodiscard]] VkSurfaceKHR surface() const noexcept { return surface_; }
+    [[nodiscard]] bool presentationEnabled() const noexcept { return surface_ != VK_NULL_HANDLE; }
+
+    // Blocks until the device has finished all submitted work. Call before
+    // destroying resources that in-flight frames may still reference.
+    void waitIdle() const noexcept;
 
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags required) const;
 
@@ -102,11 +137,14 @@ public:
 
 private:
     void createInstance(const VulkanContextOptions& options);
+    void createDebugMessenger();
     void pickPhysicalDevice();
     void createDevice();
     void destroy() noexcept;
 
     VkInstance instance_ = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT debugMessenger_ = VK_NULL_HANDLE;
+    VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue computeQueue_ = VK_NULL_HANDLE;
@@ -114,7 +152,9 @@ private:
     VkCommandPool commandPool_ = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memoryProperties_{};
     std::string deviceName_;
+    VkPhysicalDeviceType deviceType_ = VK_PHYSICAL_DEVICE_TYPE_OTHER;
     bool validationEnabled_ = false;
+    std::atomic<std::uint32_t> validationErrors_{0};  // written by the debug-utils callback
 };
 
 // synchronization2 helpers (core in Vulkan 1.3). recordImageBarrier moves

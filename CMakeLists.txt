@@ -109,6 +109,7 @@ add_executable(DarkHouse
     src/app_controller.cpp
     src/asset_manager.cpp
     src/vulkan_context.cpp
+    src/swapchain.cpp
     src/render_pipeline.cpp
     src/layer_stack.cpp
     src/ai_segmentation.cpp
@@ -116,6 +117,7 @@ add_executable(DarkHouse
     include/asset_manager.hpp
     include/vulkan_context.hpp
     include/vulkan_utils.hpp
+    include/swapchain.hpp
     include/render_pipeline.hpp
     include/layer_stack.hpp
     include/ai_segmentation.hpp
@@ -140,6 +142,9 @@ set_target_properties(DarkHouse PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 if(DARKHOUSE_GUI)
+    target_sources(DarkHouse PRIVATE
+        src/platform_window.cpp
+        include/platform_window.hpp)
     target_link_libraries(DarkHouse PRIVATE DarkHouse::imgui glfw glm::glm)
     target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_WITH_GUI=1)
 endif()
@@ -153,6 +158,28 @@ else()
     set(DARKHOUSE_VALIDATION_DEFAULT 0)
 endif()
 target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_VALIDATION_DEFAULT=${DARKHOUSE_VALIDATION_DEFAULT})
+
+# Where the Khronos validation layer manifest lives. When the loader cannot
+# find the layer at runtime (SDK not installed system-wide), the context adds
+# this directory through VK_ADD_LAYER_PATH, unless the environment already
+# steers layer discovery.
+find_path(DARKHOUSE_VK_LAYER_MANIFEST_DIR
+    NAMES VkLayer_khronos_validation.json
+    HINTS
+        "$ENV{VULKAN_SDK}/share/vulkan/explicit_layer.d"
+        "$ENV{VULKAN_SDK}/etc/vulkan/explicit_layer.d"
+        "$ENV{VULKAN_SDK}/Bin"
+        "$ENV{VULKAN_SDK}/bin"
+    PATHS
+        /usr/share/vulkan/explicit_layer.d
+        /usr/local/share/vulkan/explicit_layer.d
+        /opt/homebrew/share/vulkan/explicit_layer.d
+    NO_DEFAULT_PATH)
+mark_as_advanced(DARKHOUSE_VK_LAYER_MANIFEST_DIR)
+if(DARKHOUSE_VK_LAYER_MANIFEST_DIR)
+    set(DARKHOUSE_VK_LAYER_DEFINITION DARKHOUSE_VK_LAYER_DIR="${DARKHOUSE_VK_LAYER_MANIFEST_DIR}")
+    target_compile_definitions(DarkHouse PRIVATE ${DARKHOUSE_VK_LAYER_DEFINITION})
+endif()
 
 # Compiler flags shared by every platform: strict warnings, UTF-8 sources, and
 # standard-library assertions in Debug builds.
@@ -203,4 +230,31 @@ if(DARKHOUSE_GUI)
 else()
     message(STATUS "  GUI:           OFF (headless/CLI only)")
 endif()
-message(STATUS "  Validation:    ${DARKHOUSE_VULKAN_VALIDATION} by default")
+message(STATUS "  Validation:    ${DARKHOUSE_VULKAN_VALIDATION} by default; layer manifest: ${DARKHOUSE_VK_LAYER_MANIFEST_DIR}")
+
+# ------------------------------------------------------------------------------
+# Tests (CTest). GUI tests need a display; they exit 77 (skipped) without one.
+# Headless CI can run them under Xvfb with a software Vulkan driver (lavapipe).
+# ------------------------------------------------------------------------------
+option(DARKHOUSE_BUILD_TESTS "Build the CTest test programs" ON)
+if(DARKHOUSE_BUILD_TESTS)
+    enable_testing()
+endif()
+if(DARKHOUSE_BUILD_TESTS AND DARKHOUSE_GUI)
+    add_executable(darkhouse_present_smoke
+        tests/present_smoke.cpp
+        src/platform_window.cpp
+        src/vulkan_context.cpp
+        src/swapchain.cpp)
+    target_include_directories(darkhouse_present_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    target_link_libraries(darkhouse_present_smoke PRIVATE glfw Vulkan::Vulkan)
+    target_compile_definitions(darkhouse_present_smoke PRIVATE GLFW_INCLUDE_NONE ${DARKHOUSE_VK_LAYER_DEFINITION})
+    if(NOT MSVC)
+        target_compile_options(darkhouse_present_smoke PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
+        if(DARKHOUSE_WARNINGS_AS_ERRORS)
+            target_compile_options(darkhouse_present_smoke PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME present_smoke COMMAND darkhouse_present_smoke --frames 120 --resize)
+    set_tests_properties(present_smoke PROPERTIES SKIP_RETURN_CODE 77 LABELS "gui;vulkan" TIMEOUT 120)
+endif()
