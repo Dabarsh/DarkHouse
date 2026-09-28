@@ -6,7 +6,8 @@
 namespace darkhouse {
 
 int developStage(std::string_view nodeType) noexcept {
-    constexpr std::array<std::string_view, 5> kOrder{"denoise", "white_balance", "exposure", "hsl", "color_grading"};
+    constexpr std::array<std::string_view, 6> kOrder{"denoise", "white_balance", "exposure", "hsl", "color_grading",
+                                                     "local_adjust"};
     for (std::size_t i = 0; i < kOrder.size(); ++i) {
         if (kOrder[i] == nodeType) return static_cast<int>(i);
     }

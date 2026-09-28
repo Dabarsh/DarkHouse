@@ -52,7 +52,7 @@ VkImageSubresourceRange colorRange() {
     range.baseMipLevel = 0;
     range.levelCount = 1;
     range.baseArrayLayer = 0;
-    range.layerCount = 1;
+    range.layerCount = VK_REMAINING_ARRAY_LAYERS;  // every layer of array textures
     return range;
 }
 
@@ -478,13 +478,14 @@ std::uint32_t VulkanContext::findMemoryType(std::uint32_t typeBits, VkMemoryProp
 }
 
 GPUTexture VulkanContext::createTexture(std::uint32_t width, std::uint32_t height, PixelFormat format,
-                                        VkImageUsageFlags usage) const {
+                                        VkImageUsageFlags usage, std::uint32_t arrayLayers) const {
     if (width == 0 || height == 0) throw std::invalid_argument("createTexture: zero-sized texture");
 
     GPUTexture texture;
     texture.width = width;
     texture.height = height;
     texture.format = format;
+    texture.layers = std::max(arrayLayers, 1u);
     try {
         VkImageCreateInfo imageInfo{};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -494,7 +495,7 @@ GPUTexture VulkanContext::createTexture(std::uint32_t width, std::uint32_t heigh
         imageInfo.extent.height = height;
         imageInfo.extent.depth = 1;
         imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
+        imageInfo.arrayLayers = texture.layers;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.usage = usage;
@@ -514,7 +515,7 @@ GPUTexture VulkanContext::createTexture(std::uint32_t width, std::uint32_t heigh
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         viewInfo.image = texture.image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.viewType = arrayLayers > 0 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
         viewInfo.format = imageInfo.format;
         viewInfo.subresourceRange = colorRange();
         checkVk(vkCreateImageView(device_, &viewInfo, nullptr, &texture.view), "vkCreateImageView");
@@ -654,8 +655,9 @@ void VulkanContext::destroyBuffer(GPUBuffer& buffer) const noexcept {
     buffer = GPUBuffer{};
 }
 
-std::vector<std::byte> VulkanContext::downloadTexture(GPUTexture& texture) const {
+std::vector<std::byte> VulkanContext::downloadTexture(GPUTexture& texture, std::uint32_t layer) const {
     if (!texture.valid()) throw std::invalid_argument("downloadTexture: texture is not allocated");
+    if (layer >= texture.layers) throw std::out_of_range("downloadTexture: no such array layer");
     const VkDeviceSize size = VkDeviceSize{texture.width} * texture.height * bytesPerPixel(texture.format);
     GPUBuffer readback = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, /*hostVisible=*/true);
     ScopeExit cleanup([&] { destroyBuffer(readback); });
@@ -665,6 +667,7 @@ std::vector<std::byte> VulkanContext::downloadTexture(GPUTexture& texture) const
                            VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy copy{};
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.baseArrayLayer = layer;
         copy.imageSubresource.layerCount = 1;
         copy.imageExtent = {texture.width, texture.height, 1};
         vkCmdCopyImageToBuffer(cmd, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &copy);
@@ -677,9 +680,11 @@ std::vector<std::byte> VulkanContext::downloadTexture(GPUTexture& texture) const
     return {bytes, bytes + size};
 }
 
-void VulkanContext::uploadRegions(GPUTexture& texture, std::span<const RegionUpload> regions) const {
+void VulkanContext::uploadRegions(GPUTexture& texture, std::span<const RegionUpload> regions,
+                                  std::uint32_t layer) const {
     if (regions.empty()) return;
     if (!texture.valid()) throw std::invalid_argument("uploadRegions: texture is not allocated");
+    if (layer >= texture.layers) throw std::out_of_range("uploadRegions: no such array layer");
 
     // Offsets aligned to 16 bytes satisfy vkCmdCopyBufferToImage for every PixelFormat.
     constexpr VkDeviceSize kOffsetAlignment = 16;
@@ -709,7 +714,7 @@ void VulkanContext::uploadRegions(GPUTexture& texture, std::span<const RegionUpl
         copy.bufferImageHeight = 0;
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copy.imageSubresource.mipLevel = 0;
-        copy.imageSubresource.baseArrayLayer = 0;
+        copy.imageSubresource.baseArrayLayer = layer;
         copy.imageSubresource.layerCount = 1;
         copy.imageOffset.x = static_cast<std::int32_t>(region.x);
         copy.imageOffset.y = static_cast<std::int32_t>(region.y);

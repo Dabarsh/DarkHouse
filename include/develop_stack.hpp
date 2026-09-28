@@ -9,8 +9,8 @@
 //   exposure         exposure, highlights / shadows, contrast
 //   hsl              colour mixer
 //   color_grading    presence and 3-way colour wheels
-//   (masks, lens corrections and other nodes follow; unknown types keep
-//    their relative position at the end)
+//   local_adjust     masked local adjustments, on top of the global look
+//   (other nodes follow; unknown types keep their relative position at the end)
 //
 // The UI adds a node the first time its section is edited, so an untouched
 // photo runs only what it needs.

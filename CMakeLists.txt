@@ -56,6 +56,8 @@ set(DARKHOUSE_SHADER_SOURCES
     shaders/white_balance.comp
     shaders/hsl_adjust.comp
     shaders/color_grading.comp
+    shaders/mask_generate.comp
+    shaders/local_adjust.comp
     shaders/denoise_down0.comp
     shaders/denoise_down.comp
     shaders/denoise_sigma.comp
@@ -64,6 +66,8 @@ set(DARKHOUSE_SHADER_SOURCES
 # Headers pulled in with #include; every shader is rebuilt when one changes.
 set(DARKHOUSE_SHADER_INCLUDES
     shaders/color_common.glsl
+    shaders/mask_common.glsl
+    shaders/tone_common.glsl
     shaders/denoise_common.glsl
     shaders/denoise_config.h)
 list(TRANSFORM DARKHOUSE_SHADER_INCLUDES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE DARKHOUSE_SHADER_INCLUDE_PATHS)
@@ -182,6 +186,8 @@ add_library(darkhouse_core STATIC
     src/color_adjust.cpp
     src/color_nodes.cpp
     src/develop_stack.cpp
+    src/mask_engine.cpp
+    src/local_adjust_node.cpp
     src/image_decoder.cpp
     src/ui/library_model.cpp
     include/app_controller.hpp
@@ -199,6 +205,8 @@ add_library(darkhouse_core STATIC
     include/color_adjust.hpp
     include/color_nodes.hpp
     include/develop_stack.hpp
+    include/mask_engine.hpp
+    include/local_adjust_node.hpp
     include/image_decoder.hpp
     src/tiff_reader.hpp
     src/parallel.hpp
@@ -335,6 +343,21 @@ if(DARKHOUSE_BUILD_TESTS)
     add_test(NAME color_gpu COMMAND darkhouse_color_gpu_test)
     set_tests_properties(color_gpu PROPERTIES
         SKIP_RETURN_CODE 77 LABELS "color;vulkan" TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
+
+    add_executable(darkhouse_mask_engine_test tests/mask_engine_test.cpp)
+    target_link_libraries(darkhouse_mask_engine_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_mask_engine_test)
+    add_test(NAME mask_engine COMMAND darkhouse_mask_engine_test)
+    set_tests_properties(mask_engine PROPERTIES LABELS "masking" TIMEOUT 60)
+
+    add_executable(darkhouse_mask_gpu_test tests/mask_gpu_test.cpp)
+    target_link_libraries(darkhouse_mask_gpu_test PRIVATE darkhouse_core)
+    target_compile_definitions(darkhouse_mask_gpu_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+    darkhouse_apply_build_flags(darkhouse_mask_gpu_test)
+    add_test(NAME mask_gpu COMMAND darkhouse_mask_gpu_test)
+    set_tests_properties(mask_gpu PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS "masking;vulkan" TIMEOUT 120
         ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
 
     add_executable(darkhouse_denoise_test tests/denoise_test.cpp)

@@ -47,6 +47,7 @@ struct GPUTexture {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     PixelFormat format = PixelFormat::R16G16B16A16_SFLOAT;
+    std::uint32_t layers = 1;  // array layers (the view is 2D_ARRAY when created as an array)
     // Layout the image will be in once every command recorded so far has run.
     // Barrier helpers keep it up to date.
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -123,8 +124,10 @@ public:
 
     [[nodiscard]] std::uint32_t findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags required) const;
 
+    // arrayLayers 0: a plain 2D texture (image2D in shaders). N >= 1: a 2D
+    // array of N layers with a 2D_ARRAY view (image2DArray).
     [[nodiscard]] GPUTexture createTexture(std::uint32_t width, std::uint32_t height, PixelFormat format,
-                                           VkImageUsageFlags usage) const;
+                                           VkImageUsageFlags usage, std::uint32_t arrayLayers = 0) const;
     // Safe to call on an empty texture. Resets `texture` to its default state.
     void destroyTexture(GPUTexture& texture) const noexcept;
 
@@ -163,9 +166,9 @@ public:
         std::uint32_t height = 0;
         std::span<const std::byte> texels;  // width * height * bytesPerPixel(format)
     };
-    // Copies all regions through one staging buffer and one submission.
-    // Leaves the texture in VK_IMAGE_LAYOUT_GENERAL.
-    void uploadRegions(GPUTexture& texture, std::span<const RegionUpload> regions) const;
+    // Copies all regions (into array layer `layer`) through one staging
+    // buffer and one submission. Leaves the texture in VK_IMAGE_LAYOUT_GENERAL.
+    void uploadRegions(GPUTexture& texture, std::span<const RegionUpload> regions, std::uint32_t layer = 0) const;
 
     // Fills the texture with a solid colour. Needs TRANSFER_DST usage and
     // leaves the texture in VK_IMAGE_LAYOUT_GENERAL.
@@ -174,7 +177,7 @@ public:
     // Copies the whole texture to host memory (tightly packed texels) and
     // blocks until done. Needs TRANSFER_SRC usage; leaves the texture in
     // VK_IMAGE_LAYOUT_GENERAL. For tests, export and tools, not per frame.
-    [[nodiscard]] std::vector<std::byte> downloadTexture(GPUTexture& texture) const;
+    [[nodiscard]] std::vector<std::byte> downloadTexture(GPUTexture& texture, std::uint32_t layer = 0) const;
 
 private:
     void createInstance(const VulkanContextOptions& options);
