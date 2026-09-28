@@ -158,6 +158,7 @@ add_library(darkhouse_core STATIC
     src/render_pipeline.cpp
     src/layer_stack.cpp
     src/ai_segmentation.cpp
+    src/denoise.cpp
     src/ui/library_model.cpp
     include/app_controller.hpp
     include/asset_manager.hpp
@@ -169,11 +170,14 @@ add_library(darkhouse_core STATIC
     include/render_pipeline.hpp
     include/layer_stack.hpp
     include/ai_segmentation.hpp
+    include/denoise.hpp
+    shaders/denoise_config.h
     include/ui/library_model.hpp
     schema/catalog.sql)
 add_dependencies(darkhouse_core darkhouse_shaders)
 target_include_directories(darkhouse_core
     PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders"   # denoise_config.h, shared with GLSL
     PRIVATE "${DARKHOUSE_GENERATED_DIR}")
 target_link_libraries(darkhouse_core
     PUBLIC  Vulkan::Vulkan Threads::Threads
@@ -277,6 +281,12 @@ if(DARKHOUSE_BUILD_TESTS)
     darkhouse_apply_build_flags(darkhouse_library_model_test)
     add_test(NAME library_model COMMAND darkhouse_library_model_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
     set_tests_properties(library_model PROPERTIES LABELS "catalog" TIMEOUT 60)
+
+    add_executable(darkhouse_denoise_test tests/denoise_test.cpp)
+    target_link_libraries(darkhouse_denoise_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_denoise_test)
+    add_test(NAME denoise_reference COMMAND darkhouse_denoise_test)
+    set_tests_properties(denoise_reference PROPERTIES LABELS "denoise" TIMEOUT 120)
 
     if(DARKHOUSE_GUI)
         add_executable(darkhouse_present_smoke tests/present_smoke.cpp)
