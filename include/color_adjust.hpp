@@ -63,6 +63,13 @@ static_assert(sizeof(WhiteBalancePush) == 48);
 [[nodiscard]] WhiteBalancePush whiteBalancePush(const WhiteBalanceParams& params) noexcept;
 [[nodiscard]] Rgb applyWhiteBalance(const WhiteBalancePush& push, const Rgb& rgb) noexcept;
 
+// --- Tone ---------------------------------------------------------------------------------
+
+// Exposure (stops), then highlights / shadows and contrast (each -1..1), as
+// the exposure node and the local adjustments apply them
+// (shaders/tone_common.glsl).
+[[nodiscard]] Rgb applyTone(Rgb rgb, float exposureEV, float highlights, float shadows, float contrast) noexcept;
+
 // --- HSL colour mixer ---------------------------------------------------------------------
 
 inline constexpr std::size_t kHslBands = 8;

@@ -179,8 +179,8 @@ dragged out into their own OS windows, for example a second monitor.
 | Center | **Filmstrip** | The current collection as a horizontal strip, kept in sync with the grid. |
 | Develop | **Adjustments** | White balance (temperature in kelvin, tint), tone (exposure, contrast, highlights, shadows), presence (vibrance, saturation), point tone curves (composite RGB and per channel, monotone spline, presets), the 8-band colour mixer (hue, saturation, luminance), 3-way colour grading wheels with blending and balance, noise reduction, and lens corrections (a lensfun lens profile matched to the photo's lens, with distortion / vignetting amounts and chromatic aberration removal, plus manual distortion, vignetting, fringe, scale and constrain crop). Every control runs live on the GPU develop graph and is saved to the photo's edit stack on release. |
 | Develop, Canvas | **Masking** | Local adjustments: a stack of masks built from brush, linear and radial gradient, luminance and colour range components (and Subject / Sky placeholders), each added, subtracted or intersected, inverted and faded; brush size, feather, flow and erase; the edits each mask applies. The viewport paints and drags the selected component and shows the selected mask as a red overlay. |
-| Canvas | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, the selected layer's blend mode and opacity, add/delete/reorder. |
-| Canvas | **Properties** | The selected layer: name, layer mask (add, enable, remove, or make from a Masking panel mask) and its content. |
+| Canvas | **Layers** | The unified layer stack: pixel (PX), adjustment (ADJ: exposure, white balance, curves, hue/saturation, colour grading, applied to the layers below them in their group), vector (VEC: anti-aliased fill and stroke), smart object (OBJ: another catalog photo with its exposure, colour and curve edits, decoded in the background) and group (GRP) layers, with visibility, the selected layer's blend mode (16 W3C modes: normal, darken, multiply, colour burn, lighten, screen, colour dodge, overlay, soft/hard light, difference, exclusion, hue, saturation, colour, luminosity) and opacity, add/delete/reorder. |
+| Canvas | **Properties** | The selected layer: name, layer mask (add, enable, remove, or make from a Masking panel mask), its content (adjustment parameters with sliders, curve editor and wheels; vector fill and stroke; smart-object source) and its transform (position, size with linked aspect, angle, flip). The viewport outlines the selected layer. |
 | Floating | **Engine** | GPU, validation, swapchain and frame-timing diagnostics, and the GPU time of every develop node (View → Panels). |
 
 Keyboard (grid and filmstrip focused):
@@ -412,14 +412,20 @@ This is the core architecture plus the desktop shell. What works today:
   persistence.
 - **GPU**: device selection (discrete first), textures, staging uploads, the
   compute-node DAG with cycle detection, barriers and per-node timestamps,
-  and the exposure, noise-reduction and display-transform nodes. A
-  presenting context with swapchain, frame synchronization and a
-  debug-utils validation messenger.
+  non-blocking evaluation, and the develop nodes: noise reduction, lens
+  corrections, white balance, exposure / tone, tone curves, the HSL colour
+  mixer, colour grading, local (masked) adjustments with GPU mask
+  generation, and the display transform. A presenting context with
+  swapchain, frame synchronization and a debug-utils validation messenger.
 - **Photos**: decoding for the live preview (common formats, embedded RAW
   previews, EXIF orientation), asynchronous and downscaled in linear light.
-- **Layers**: sparse FP16 tiles with F16C conversion, dirty tracking, the
-  layer tree with masks and groups, the CPU reference compositor for all
-  five blend modes, and parallel tile upload.
+- **Layers**: sparse FP16 tiles with F16C conversion, dirty tracking (mapped
+  through layer transforms), the layer tree with masks, groups and
+  transforms, and the CPU tile compositor: 16 blend modes, vector shapes,
+  adjustment layers, smart objects, and parallel tile upload. Adjustment
+  layers are evaluated on the CPU: on the 4-core test VM a full 3072 x 2048
+  recomposite takes about 50 ms for pixels and shapes, plus about 0.2 s per
+  curves or HSL adjustment layer.
 - **App**: event-driven frame loop, four modes, graceful degradation, headless
   batch mode.
 - **Desktop UI**: docking shell with four persistent workspace layouts
@@ -436,11 +442,13 @@ Next milestones:
    HEIF and RAF metadata.
 2. Full-resolution export: render the develop stack at full size in tiles.
    The canvas currently edits a working preview.
-3. GPU compositing: blend modes and masks as compute nodes, with the CPU
-   compositor kept as the parity reference. Adjustment, vector and
-   smart-object layers render there.
-4. GPU nodes for white balance, presence and HSL, wired to the existing sliders.
-5. Vector rasterization of `VECTOR_SHAPE` layers, and smart-object rendering.
+3. GPU compositing: blend modes, masks, transforms and adjustment layers as
+   compute nodes (the develop nodes already exist), with the CPU compositor
+   kept as the parity reference; asynchronous recompositing so a heavy
+   document never stalls the UI.
+4. Smart objects rendered through their full develop stack (denoise, lens
+   corrections and local masks included) on the GPU.
+5. AI segmentation models for the Subject / Sky mask placeholders.
 6. CI across macOS, Linux (Xvfb + lavapipe, as above) and Windows.
 
 ## Third-party components

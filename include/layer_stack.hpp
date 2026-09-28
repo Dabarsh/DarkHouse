@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -217,7 +218,50 @@ enum class LayerType : std::uint8_t {
     GROUP,                  // container that composites its children in isolation
 };
 
-enum class BlendMode : std::uint8_t { NORMAL, MULTIPLY, SCREEN, OVERLAY, COLOR_DODGE };
+// W3C Compositing and Blending Level 1 modes. The first twelve are separable
+// (per channel); HUE .. LUMINOSITY mix whole colours.
+enum class BlendMode : std::uint8_t {
+    NORMAL,
+    MULTIPLY,
+    SCREEN,
+    OVERLAY,
+    COLOR_DODGE,
+    DARKEN,
+    LIGHTEN,
+    COLOR_BURN,
+    HARD_LIGHT,
+    SOFT_LIGHT,
+    DIFFERENCE,
+    EXCLUSION,
+    HUE,
+    SATURATION,
+    COLOR,
+    LUMINOSITY,
+};
+inline constexpr std::size_t kBlendModeCount = 16;
+
+// 2D affine map {a, b, c, d, e, f}: x' = a x + c y + e, y' = b x + d y + f.
+using Affine = std::array<float, 6>;
+inline constexpr Affine kIdentityAffine{1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+[[nodiscard]] std::array<float, 2> applyAffine(const Affine& m, float x, float y) noexcept;
+// The inverse map, or nullopt when `m` is singular.
+[[nodiscard]] std::optional<Affine> invertAffine(const Affine& m) noexcept;
+
+// Where a layer's content sits on the canvas: scaled and rotated about a
+// pivot (in layer pixels), then moved. Identity by default.
+struct LayerTransform {
+    float translateX = 0.0f;  // canvas pixels
+    float translateY = 0.0f;
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+    float rotation = 0.0f;  // degrees, clockwise on screen
+    float pivotX = 0.0f;    // layer pixels
+    float pivotY = 0.0f;
+
+    bool operator==(const LayerTransform&) const = default;
+    [[nodiscard]] bool isIdentity() const noexcept;
+    [[nodiscard]] Affine matrix() const noexcept;  // layer -> canvas
+};
 
 // PARAMETRIC_ADJUSTMENT payload. Uses the same (type, params) pair as an
 // edit_nodes row, so it maps straight onto createComputeNode().
@@ -237,11 +281,23 @@ struct VectorContent {
     float strokeWidth = 0.0f;
 };
 
-// SMART_OBJECT payload: renders another asset through its own develop stack.
+// SMART_OBJECT payload: another catalog asset, placed with the layer's
+// transform. `pixels` holds its rendering (decoded, with the asset's point
+// adjustments applied) once loaded; until then the layer draws nothing.
 struct SmartObjectContent {
     std::string sourceAssetId;
-    std::array<float, 6> transform{1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};  // affine [a b c d tx ty]
+    std::shared_ptr<const SparseRasterLayer> pixels;
 };
+
+// A flattened subpath, in the coordinates it was flattened into.
+struct Polyline {
+    std::vector<std::array<float, 2>> points;
+    bool closed = false;
+};
+// The shape's subpaths as polylines (curves split finely enough that no
+// point strays more than about `tolerance` from the curve), mapped by `m`.
+[[nodiscard]] std::vector<Polyline> flattenPath(const VectorContent& shape, const Affine& m = kIdentityAffine,
+                                                float tolerance = 0.25f);
 
 class LayerNode {
 public:
@@ -265,11 +321,25 @@ public:
 
     // Compositing
     [[nodiscard]] BlendMode blendMode() const noexcept { return blendMode_; }
-    void setBlendMode(BlendMode mode) noexcept { blendMode_ = mode; }
+    void setBlendMode(BlendMode mode) noexcept;
     [[nodiscard]] float opacity() const noexcept { return opacity_; }
     void setOpacity(float opacity) noexcept;  // clamped to [0, 1]
     [[nodiscard]] bool visible() const noexcept { return visible_; }
-    void setVisible(bool visible) noexcept { visible_ = visible; }
+    void setVisible(bool visible) noexcept;
+    // Placement of raster, vector and smart-object content. Groups and
+    // adjustment layers ignore it; layer masks stay in canvas coordinates.
+    [[nodiscard]] const LayerTransform& transform() const noexcept { return transform_; }
+    void setTransform(const LayerTransform& transform) noexcept;  // non-finite values keep the old transform
+    // The content's extent in layer pixels {x0, y0, x1, y1}; nullopt for
+    // groups, adjustments and smart objects that have not loaded.
+    [[nodiscard]] std::optional<std::array<float, 4>> contentBounds() const;
+
+    // Every property setter and structural change marks the document for a
+    // full recomposite (the flag lives on the root). Content edited through
+    // the mutable accessors (vector paths, smart-object pixels) must call
+    // markCompositeDirty() itself; raster pixels track their own tiles.
+    void markCompositeDirty() noexcept;
+    [[nodiscard]] bool takeCompositeDirty() noexcept;  // on the root: returns and clears the flag
 
     // Content. Each accessor returns nullptr when the node is of another type.
     [[nodiscard]] SparseRasterLayer* raster() noexcept { return std::get_if<SparseRasterLayer>(&content_); }
@@ -290,9 +360,9 @@ public:
     SparseRasterLayer& addMask(std::uint32_t width, std::uint32_t height);  // replaces any existing mask
     [[nodiscard]] SparseRasterLayer* mask() noexcept { return mask_.get(); }
     [[nodiscard]] const SparseRasterLayer* mask() const noexcept { return mask_.get(); }
-    void removeMask() noexcept { mask_.reset(); }
+    void removeMask() noexcept;
     [[nodiscard]] bool maskEnabled() const noexcept { return maskEnabled_ && mask_ != nullptr; }
-    void setMaskEnabled(bool enabled) noexcept { maskEnabled_ = enabled; }
+    void setMaskEnabled(bool enabled) noexcept;
 
     // Hierarchy. Only GROUP nodes have children; they are ordered bottom to top.
     // Children are taken by rvalue reference, so ownership moves only on
@@ -329,6 +399,8 @@ private:
     BlendMode blendMode_ = BlendMode::NORMAL;
     float opacity_ = 1.0f;
     bool visible_ = true;
+    LayerTransform transform_;
+    bool compositeDirty_ = false;
     std::unique_ptr<SparseRasterLayer> mask_;
     bool maskEnabled_ = true;
     LayerNode* parent_ = nullptr;
@@ -339,14 +411,26 @@ private:
 // sorted row-major. These are the composite tiles that need re-uploading.
 [[nodiscard]] std::vector<TileKey> takeDirtyTiles(LayerNode& root);
 
+// The canvas tiles (of a canvasWidth x canvasHeight canvas) to recomposite:
+// every tile after markCompositeDirty(), otherwise the raster and mask tiles
+// written since the last call, a transformed layer's mapped onto the canvas.
+// Clears all of it. Sorted row-major.
+[[nodiscard]] std::vector<TileKey> takeDirtyTiles(LayerNode& root, std::uint32_t canvasWidth, std::uint32_t canvasHeight);
+
 // -----------------------------------------------------------------------------
 // CPU reference compositor
 // -----------------------------------------------------------------------------
 
 // Separable blend function B(Cb, Cs) from the W3C Compositing and Blending
-// Level 1 spec. SCREEN, OVERLAY and COLOR_DODGE are display-referred, so their
-// inputs are clamped to [0, 1]. NORMAL and MULTIPLY accept HDR values.
+// Level 1 spec. NORMAL, MULTIPLY, DARKEN, LIGHTEN and DIFFERENCE accept HDR
+// values; the other modes are display-referred, so their inputs are clamped
+// to [0, 1]. Non-separable modes return the source here (see blendColor).
 [[nodiscard]] float blendChannel(BlendMode mode, float backdrop, float source) noexcept;
+// B(Cb, Cs) for whole colours: blendChannel per channel for separable modes,
+// the W3C hue / saturation / color / luminosity formulas (on [0, 1] inputs)
+// for the others.
+[[nodiscard]] std::array<float, 3> blendColor(BlendMode mode, const std::array<float, 3>& backdrop,
+                                              const std::array<float, 3>& source) noexcept;
 
 struct CompositedTile {
     std::uint32_t width = 0;
@@ -354,10 +438,13 @@ struct CompositedTile {
     std::vector<float> rgba;  // straight alpha, linear light, width * height * 4
 };
 
-// Composites the raster content under `root` for one canvas tile: groups are
-// isolated, masks, opacity and blend modes are honoured, and invisible layers
-// are skipped. Adjustment, vector and smart-object layers only render on the GPU
-// and are skipped here. Used for thumbnails, tests and GPU parity checks.
+// Composites the layers under `root` for one canvas tile: groups are
+// isolated; masks, opacity, blend modes and transforms are honoured;
+// invisible layers are skipped. Raster and smart-object content is resampled
+// bilinearly (premultiplied) when transformed, vector shapes are filled and
+// stroked with anti-aliasing (nonzero winding, round joins and caps), and
+// adjustment layers apply their operator (adjustment_ops.hpp) to what lies
+// below them in their group.
 [[nodiscard]] CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_t canvasWidth,
                                               std::uint32_t canvasHeight);
 

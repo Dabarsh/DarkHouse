@@ -582,11 +582,9 @@ void DarkHouseApp::replaceDocument(std::unique_ptr<LayerNode> document, std::uin
 
 void DarkHouseApp::uploadDirtyCanvasTiles() {
     if (!gpu_) return;
-    std::vector<TileKey> dirty = takeDirtyTiles(*document_);
-    // A layer larger than the canvas can report tiles the canvas does not have.
-    const std::uint32_t tilesX = (canvasWidth_ + TILE_SIZE - 1) / TILE_SIZE;
-    const std::uint32_t tilesY = (canvasHeight_ + TILE_SIZE - 1) / TILE_SIZE;
-    std::erase_if(dirty, [&](const TileKey& key) { return key.tx >= tilesX || key.ty >= tilesY; });
+    // Tiles within the canvas that changed: written pixels (mapped through
+    // layer transforms), or all of them after a layer property changed.
+    const std::vector<TileKey> dirty = takeDirtyTiles(*document_, canvasWidth_, canvasHeight_);
     if (dirty.empty()) return;
 
     // Composite to FP16 on all cores (tiles are independent and the document

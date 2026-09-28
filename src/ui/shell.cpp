@@ -103,6 +103,7 @@ void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngin
     masking_.panelVisible = false;
     drawPanels(ctx);
     syncMaskOverlay(ctx);
+    canvas_.pollSmartObjects(app.document(), app.canvasWidth(), app.canvasHeight());
     if (requests.openImportDialog) openImportDialog_ = true;
 
     drawImportDialog(ctx);

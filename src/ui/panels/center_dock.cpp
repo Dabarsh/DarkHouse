@@ -1,5 +1,6 @@
 // Center dock: library grid, viewport (develop output), filmstrip.
 
+#include "ui/canvas_state.hpp"
 #include "ui/masking.hpp"
 #include "ui/panels.hpp"
 #include "ui/theme.hpp"
@@ -278,6 +279,10 @@ void ViewportPanel::draw(PanelContext& ctx) {
     }
     drawList->AddRect(imageMin - glm::vec2(1.0f), imageMax + glm::vec2(1.0f), IM_COL32(0, 0, 0, 160));
     drawMaskingOverlay(ctx, CanvasView{imageMin, scale, imageSize}, hovered);
+    if (compositing) {
+        ctx.canvas.validate(ctx.app.document());
+        if (const LayerNode* layer = ctx.canvas.selectedLayer) drawLayerOutline(*layer, drawList, imageMin, scale);
+    }
     drawList->PopClipRect();
     drawPhotoStatus(ctx, origin, region);
 

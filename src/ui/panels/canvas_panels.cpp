@@ -3,6 +3,8 @@
 
 #include "ui/panels.hpp"
 
+#include "color_adjust.hpp"
+#include "tone_curve.hpp"
 #include "ui/canvas_state.hpp"
 #include "ui/masking.hpp"
 #include "ui/theme.hpp"
@@ -27,19 +29,18 @@ struct LayerStyle {
     const char* chip;
     ImVec4 color;
     const char* description;
-    bool cpuComposited;  // rendered by today's CPU compositor
 };
 
 LayerStyle layerStyle(LayerType type) {
     switch (type) {
     case LayerType::PARAMETRIC_ADJUSTMENT:
-        return {"ADJ", theme::kLayerParametric, "Parametric adjustment (GPU operator on everything below)", false};
-    case LayerType::RASTER_PIXEL: return {"PX", theme::kLayerRaster, "Raster pixels (sparse FP16 tiles)", true};
-    case LayerType::VECTOR_SHAPE: return {"VEC", theme::kLayerVector, "Vector shape (resolution independent)", false};
-    case LayerType::SMART_OBJECT: return {"OBJ", theme::kLayerSmart, "Smart object (another catalog asset)", false};
-    case LayerType::GROUP: return {"GRP", theme::kLayerGroup, "Group (composited in isolation)", true};
+        return {"ADJ", theme::kLayerParametric, "Adjustment layer (changes the layers below it in its group)"};
+    case LayerType::RASTER_PIXEL: return {"PX", theme::kLayerRaster, "Pixel layer (sparse FP16 tiles)"};
+    case LayerType::VECTOR_SHAPE: return {"VEC", theme::kLayerVector, "Vector shape (resolution independent)"};
+    case LayerType::SMART_OBJECT: return {"OBJ", theme::kLayerSmart, "Smart object (another catalog photo)"};
+    case LayerType::GROUP: return {"GRP", theme::kLayerGroup, "Group (composited in isolation)"};
     }
-    return {"?", theme::kLayerGroup, "", false};
+    return {"?", theme::kLayerGroup, ""};
 }
 
 std::size_t rasterCount(const LayerNode& root, const LayerNode* excludeSubtree) {
@@ -130,6 +131,80 @@ VectorContent ellipseShape(float cx, float cy, float rx, float ry) {
     return shape;
 }
 
+// Parameter editor of an adjustment layer; true when a value changed.
+bool editAdjustment(AdjustmentContent& content) {
+    bool changed = false;
+    auto slider = [&](const char* label, float& value, float lo, float hi, float def, const char* format,
+                      ImU32 left = 0, ImU32 right = 0) { changed |= adjustmentSlider(label, value, lo, hi, def, format, left, right).changed; };
+    try {
+        if (content.nodeType == "exposure") {
+            ExposureParams p = unpackParams<ExposureParams>(content.serializedParams, "exposure");
+            float contrast = p.contrast * 100.0f, highlights = p.highlights * 100.0f, shadows = p.shadows * 100.0f;
+            slider("Exposure", p.exposureEV, -5.0f, 5.0f, 0.0f, "%+.2f EV", IM_COL32(20, 20, 20, 255), IM_COL32(235, 235, 235, 255));
+            slider("Contrast", contrast, -100.0f, 100.0f, 0.0f, "%+.0f");
+            slider("Highlights", highlights, -100.0f, 100.0f, 0.0f, "%+.0f");
+            slider("Shadows", shadows, -100.0f, 100.0f, 0.0f, "%+.0f");
+            p.contrast = contrast / 100.0f;
+            p.highlights = highlights / 100.0f;
+            p.shadows = shadows / 100.0f;
+            if (changed) content.serializedParams = ExposureNode::pack(p);
+        } else if (content.nodeType == "white_balance") {
+            WhiteBalanceParams p = unpackParams<WhiteBalanceParams>(content.serializedParams, "white_balance");
+            changed |= adjustmentSlider("Temp", p.temperature, 2000.0f, 20000.0f, kReferenceTemperature, "%.0f K",
+                                        IM_COL32(70, 120, 230, 255), IM_COL32(235, 200, 60, 255), ImGuiSliderFlags_Logarithmic)
+                           .changed;
+            slider("Tint", p.tint, -150.0f, 150.0f, 0.0f, "%+.0f", IM_COL32(60, 190, 70, 255), IM_COL32(210, 70, 200, 255));
+            if (changed) content.serializedParams = packParams(p);
+        } else if (content.nodeType == "tone_curve") {
+            ToneCurveParams p = unpackParams<ToneCurveParams>(content.serializedParams, "tone_curve");
+            const float size = std::clamp(ImGui::GetContentRegionAvail().x, 120.0f, 260.0f);
+            changed |= curveEditor("##layerCurve", p.curves[0], IM_COL32(235, 235, 235, 255), size).changed;
+            if (ImGui::BeginCombo("##layerPreset", "Preset...")) {
+                for (CurvePreset preset : {CurvePreset::LINEAR, CurvePreset::MEDIUM_CONTRAST, CurvePreset::STRONG_CONTRAST,
+                                           CurvePreset::FADED}) {
+                    if (ImGui::Selectable(toString(preset))) {
+                        p.curves[0] = curvePreset(preset);
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (changed) content.serializedParams = packParams(p);
+        } else if (content.nodeType == "hsl") {
+            HslParams p = unpackParams<HslParams>(content.serializedParams, "hsl");
+            static int mode = 0;  // shared by every HSL layer's editor
+            constexpr std::array<const char*, 3> kModes{"Hue", "Saturation", "Luminance"};
+            for (int m = 0; m < 3; ++m) {
+                if (m > 0) ImGui::SameLine();
+                if (ImGui::RadioButton(kModes[static_cast<std::size_t>(m)], mode == m)) mode = m;
+            }
+            std::array<float, kHslBands>& values = mode == 0 ? p.hue : mode == 1 ? p.saturation : p.luminance;
+            for (std::size_t band = 0; band < kHslBands; ++band) slider(kHslBandNames[band], values[band], -100.0f, 100.0f, 0.0f, "%+.0f");
+            if (changed) content.serializedParams = packParams(p);
+        } else if (content.nodeType == "color_grading") {
+            ColorGradingParams p = unpackParams<ColorGradingParams>(content.serializedParams, "color_grading");
+            slider("Vibrance", p.vibrance, -100.0f, 100.0f, 0.0f, "%+.0f");
+            slider("Saturation", p.saturation, -100.0f, 100.0f, 0.0f, "%+.0f");
+            const float diameter = std::clamp((ImGui::GetContentRegionAvail().x - 16.0f) / 3.0f, 50.0f, 110.0f);
+            ColorWheel* wheels[3] = {&p.shadows, &p.midtones, &p.highlights};
+            const char* names[3] = {"Shadows", "Midtones", "Highlights"};
+            for (int i = 0; i < 3; ++i) {
+                if (i > 0) ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextDisabled("%s", names[i]);
+                changed |= colorWheel(names[i], wheels[i]->hue, wheels[i]->saturation, diameter).changed;
+                ImGui::EndGroup();
+            }
+            if (changed) content.serializedParams = packParams(p);
+        } else {
+            ImGui::TextDisabled("No editor for %s layers", content.nodeType.c_str());
+        }
+    } catch (const std::invalid_argument&) {
+        ImGui::TextDisabled("Unreadable %s parameters", content.nodeType.c_str());
+    }
+    return changed;
+}
+
 }  // namespace
 
 // -----------------------------------------------------------------------------
@@ -167,15 +242,8 @@ void LayersPanel::draw(PanelContext& ctx) {
     // Blend mode and opacity of the selected layer, above the stack.
     ImGui::BeginDisabled(!canEdit);
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
-    if (ImGui::BeginCombo("##Blend", canEdit ? blendModeName(selected->blendMode()) : "Normal")) {
-        for (BlendMode mode : kBlendModes) {
-            if (ImGui::Selectable(blendModeName(mode), selected->blendMode() == mode)) {
-                selected->setBlendMode(mode);
-                invalidateComposite(root);
-            }
-        }
-        ImGui::EndCombo();
-    }
+    BlendMode mode = canEdit ? selected->blendMode() : BlendMode::NORMAL;
+    if (blendModeCombo("##Blend", mode) && canEdit) selected->setBlendMode(mode);
     ImGui::SetItemTooltip("Blend mode");
     ImGui::SameLine();
     float opacity = canEdit ? selected->opacity() * 100.0f : 100.0f;
@@ -254,10 +322,7 @@ void LayersPanel::drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth) {
     const ImVec2 chipText = ImGui::CalcTextSize(style.chip);
     drawList->AddText(ImVec2(chipPos.x + (chipWidth - chipText.x) * 0.5f, chipPos.y + (frame - chipText.y) * 0.5f),
                       IM_COL32(20, 20, 22, 255), style.chip);
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s%s", style.description,
-                          style.cpuComposited ? "" : "\nNot drawn yet: GPU compositing of this layer type is a later milestone.");
-    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", style.description);
     ImGui::SameLine();
 
     // Name, opacity and mask badge.
@@ -296,15 +361,19 @@ void LayersPanel::drawAddMenu(PanelContext& ctx) {
         paintTestChart(*layer->raster());
         addLayer(ctx, std::move(layer));
     }
-    ImGui::SeparatorText("Parametric");
-    if (ImGui::MenuItem("Exposure Adjustment")) {
-        addLayer(ctx, LayerNode::createAdjustment(nextName("Exposure"),
-                                                  {std::string(ExposureNode::kTypeName), ExposureNode::pack({})}));
+    ImGui::SeparatorText("Adjustment (applies to the layers below)");
+    auto adjustment = [&](const char* label, const char* type, std::vector<std::byte> params) {
+        if (ImGui::MenuItem(label)) addLayer(ctx, LayerNode::createAdjustment(nextName(label), {type, std::move(params)}));
+    };
+    adjustment("Exposure", "exposure", ExposureNode::pack({}));
+    adjustment("White Balance", "white_balance", packParams(WhiteBalanceParams{}));
+    {
+        ToneCurveParams curves;
+        curves.curves[0] = curvePreset(CurvePreset::MEDIUM_CONTRAST);
+        adjustment("Curves", "tone_curve", packParams(curves));
     }
-    if (ImGui::MenuItem("HSL Adjustment")) {
-        addLayer(ctx, LayerNode::createAdjustment(nextName("HSL"),
-                                                  {"hsl", std::vector<std::byte>(24 * sizeof(float), std::byte{0})}));
-    }
+    adjustment("Hue / Saturation (HSL)", "hsl", packParams(HslParams{}));
+    adjustment("Color Grading", "color_grading", packParams(ColorGradingParams{}));
     ImGui::SeparatorText("Vector");
     if (ImGui::MenuItem("Rectangle")) {
         addLayer(ctx, LayerNode::createVector(nextName("Rectangle"), rectangleShape(w / 2, h / 2, w / 3, h / 4)));
@@ -315,8 +384,17 @@ void LayersPanel::drawAddMenu(PanelContext& ctx) {
     ImGui::SeparatorText("Other");
     const AssetRecord* asset = ctx.library.selected();
     if (ImGui::MenuItem("Smart Object from Selected Photo", nullptr, false, asset != nullptr)) {
-        addLayer(ctx, LayerNode::createSmartObject(asset->fileName, SmartObjectContent{asset->id, {1, 0, 0, 1, 0, 0}}));
+        addLayer(ctx, LayerNode::createSmartObject(asset->fileName, SmartObjectContent{asset->id, nullptr}));
+        std::vector<EditNodeRecord> stack;
+        try {
+            stack = ctx.app.assets().loadEditStack(asset->id);
+        } catch (const std::exception&) {
+            // no edits: the photo as decoded
+        }
+        ctx.canvas.loadSmartObject(*ctx.canvas.selectedLayer, asset->filePath, std::move(stack),
+                                   std::max(ctx.app.canvasWidth(), ctx.app.canvasHeight()));
     }
+    if (asset) ImGui::SetItemTooltip("%s, placed with its exposure, colour and curve edits", asset->fileName.c_str());
     if (ImGui::MenuItem("Group")) addLayer(ctx, LayerNode::createGroup(nextName("Group")));
     ImGui::EndPopup();
 }
@@ -398,23 +476,90 @@ void PropertiesPanel::draw(PanelContext& ctx) {
         ImGui::SetItemTooltip("%ux%u FP16, %ux%u tiles allocated on first write", raster->width(), raster->height(),
                               TILE_SIZE, TILE_SIZE);
     } else if (const AdjustmentContent* adjustment = layer.adjustment()) {
-        ImGui::Text("%s node, %zu parameter bytes", adjustment->nodeType.c_str(), adjustment->serializedParams.size());
+        ImGui::Text("%s", adjustment->nodeType.c_str());
     } else if (VectorContent* shape = layer.vectorShape()) {
         ImGui::Text("%zu path verbs", shape->verbs.size());
+        bool edited = false;
         row("Fill");
-        ImGui::ColorEdit4("##Fill", shape->fillColor.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
+        edited |= ImGui::ColorEdit4("##Fill", shape->fillColor.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
         row("Stroke");
-        ImGui::ColorEdit4("##Stroke", shape->strokeColor.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
+        edited |= ImGui::ColorEdit4("##Stroke", shape->strokeColor.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::DragFloat("##StrokeWidth", &shape->strokeWidth, 0.25f, 0.0f, 200.0f, "%.1f px");
+        edited |= ImGui::DragFloat("##StrokeWidth", &shape->strokeWidth, 0.25f, 0.0f, 200.0f, "%.1f px");
+        if (edited) invalidateComposite(root);
     } else if (const SmartObjectContent* object = layer.smartObject()) {
         const AssetRecord* source = ctx.library.findAsset(object->sourceAssetId);
         ImGui::TextWrapped("%s", source ? source->fileName.c_str() : object->sourceAssetId.c_str());
+        if (ctx.canvas.loadingSmartObject(&layer)) {
+            ImGui::TextDisabled("loading...");
+        } else if (object->pixels) {
+            ImGui::TextDisabled("%u x %u", object->pixels->width(), object->pixels->height());
+        } else {
+            ImGui::TextDisabled("not loaded");
+        }
     } else if (layer.isGroup()) {
         ImGui::Text("%zu layer%s, isolated", layer.childCount(), layer.childCount() == 1 ? "" : "s");
     }
     ImGui::EndTable();
+
+    if (AdjustmentContent* adjustment = layer.adjustment()) {
+        ImGui::SeparatorText("Adjustment");
+        if (editAdjustment(*adjustment)) invalidateComposite(root);
+    }
+    if (layer.contentBounds()) drawTransform(layer);
+}
+
+// Position, size and rotation of the layer's content (about its centre).
+void PropertiesPanel::drawTransform(LayerNode& layer) {
+    ImGui::SeparatorText("Transform");
+    LayerTransform t = layer.transform();
+    if (t.isIdentity()) {
+        // Scale and rotate about the content's centre.
+        const std::array<float, 4> bounds = *layer.contentBounds();
+        t.pivotX = 0.5f * (bounds[0] + bounds[2]);
+        t.pivotY = 0.5f * (bounds[1] + bounds[3]);
+    }
+    bool changed = false;
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemWidth(width * 0.62f);
+    changed |= ImGui::DragFloat2("Position", &t.translateX, 1.0f, -100000.0f, 100000.0f, "%.0f px");
+    ImGui::SetItemTooltip("Offset from the original place, in canvas pixels");
+    float scale[2] = {t.scaleX * 100.0f, t.scaleY * 100.0f};
+    ImGui::SetNextItemWidth(width * 0.62f);
+    if (ImGui::DragFloat2("Size", scale, 0.5f, -1000.0f, 1000.0f, "%.1f %%")) {
+        if (linkScale_) {
+            // Keep the aspect ratio: follow whichever value moved.
+            const bool xMoved = scale[0] != t.scaleX * 100.0f;
+            const float ratio = xMoved ? scale[0] / (t.scaleX * 100.0f) : scale[1] / (t.scaleY * 100.0f);
+            scale[0] = t.scaleX * 100.0f * ratio;
+            scale[1] = t.scaleY * 100.0f * ratio;
+        }
+        if (std::fabs(scale[0]) >= 0.1f && std::fabs(scale[1]) >= 0.1f) {
+            t.scaleX = scale[0] / 100.0f;
+            t.scaleY = scale[1] / 100.0f;
+            changed = true;
+        }
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Link", &linkScale_);
+    ImGui::SetNextItemWidth(width * 0.62f);
+    changed |= ImGui::SliderFloat("Angle", &t.rotation, -180.0f, 180.0f, "%.1f deg");
+    if (ImGui::Button("Flip H")) {
+        t.scaleX = -t.scaleX;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Flip V")) {
+        t.scaleY = -t.scaleY;
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset")) {
+        t = LayerTransform{};
+        changed = true;
+    }
+    if (changed) layer.setTransform(t);
 }
 
 }  // namespace darkhouse::ui

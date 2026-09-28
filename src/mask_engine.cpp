@@ -85,24 +85,6 @@ private:
     std::size_t offset_ = 0;
 };
 
-// --- Tone (mirror of shaders/tone_common.glsl) --------------------------------------------------
-
-Rgb applyTone(Rgb rgb, float exposureEV, float highlights, float shadows, float contrast) noexcept {
-    constexpr float kMiddleGrey = 0.18f, kToneRange = 2.5f, kMaxToneStops = 2.0f, kHalfMax = 65504.0f;
-    for (float& c : rgb) c = std::max(c, 0.0f);
-    const float gain = std::exp2(exposureEV);
-    for (float& c : rgb) c *= gain;
-    const float luma = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
-    const float stopsFromGrey = std::log2(std::max(luma, 1e-6f) / kMiddleGrey);
-    const float highlightMask = smoothstep(0.0f, kToneRange, stopsFromGrey);
-    const float shadowMask = smoothstep(0.0f, kToneRange, -stopsFromGrey);
-    const float toneGain = std::exp2(kMaxToneStops * (highlights * highlightMask + shadows * shadowMask));
-    for (float& c : rgb) c *= toneGain;
-    const float slope = std::exp2(contrast);
-    for (float& c : rgb) c = std::min(kMiddleGrey * std::pow(std::max(c / kMiddleGrey, 1e-8f), slope), kHalfMax);
-    return rgb;
-}
-
 // Local temperature / tint as a white-balance matrix: +100 temperature is
 // the correction a ~0.6 stop warmer illuminant setting would make.
 WhiteBalancePush localWhiteBalance(const LocalAdjustParams& params) noexcept {

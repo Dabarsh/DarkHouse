@@ -182,6 +182,7 @@ add_library(darkhouse_core STATIC
     src/swapchain.cpp
     src/render_pipeline.cpp
     src/layer_stack.cpp
+    src/adjustment_ops.cpp
     src/ai_segmentation.cpp
     src/denoise.cpp
     src/denoise_node.cpp
@@ -204,6 +205,7 @@ add_library(darkhouse_core STATIC
     include/swapchain.hpp
     include/render_pipeline.hpp
     include/layer_stack.hpp
+    include/adjustment_ops.hpp
     include/ai_segmentation.hpp
     include/denoise.hpp
     include/denoise_node.hpp

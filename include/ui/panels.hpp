@@ -103,11 +103,17 @@ private:
 };
 
 // The selected layer (CanvasState): name, layer mask (including one made
-// from a develop mask) and its content's settings.
+// from a develop mask), its content's settings (adjustment parameters,
+// vector fill and stroke, smart-object source) and its transform.
 class PropertiesPanel final : public Panel {
 public:
     PropertiesPanel() noexcept : Panel(PanelId::PROPERTIES) {}
     void draw(PanelContext& ctx) override;
+
+private:
+    void drawTransform(LayerNode& layer);
+
+    bool linkScale_ = true;
 };
 
 // Develop adjustments: white balance, tone, presence, tone curve, colour
