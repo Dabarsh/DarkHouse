@@ -251,6 +251,13 @@ void LibraryModel::applyFilter() {
     if (visible_.empty()) selectedId_.clear();
 }
 
+const AssetRecord* LibraryModel::findAsset(const std::string& id) const noexcept {
+    for (const AssetRecord& asset : all_) {
+        if (asset.id == id) return &asset;
+    }
+    return nullptr;
+}
+
 const AssetRecord* LibraryModel::selected() const noexcept {
     return selectedIndex_ && *selectedIndex_ < visible_.size() ? &visible_[*selectedIndex_] : nullptr;
 }

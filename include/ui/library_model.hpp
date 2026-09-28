@@ -85,6 +85,8 @@ public:
     [[nodiscard]] const FolderNode& folderTree() const noexcept { return folders_; }
     [[nodiscard]] const std::vector<std::string>& cameras() const noexcept { return cameras_; }
     [[nodiscard]] const std::string& lastError() const noexcept { return lastError_; }
+    // Any catalog asset by id, visible or not (nullptr when unknown).
+    [[nodiscard]] const AssetRecord* findAsset(const std::string& id) const noexcept;
     [[nodiscard]] std::string collectionTitle() const;
 
     // --- Selection (by asset id, so it survives re-queries) ------------------

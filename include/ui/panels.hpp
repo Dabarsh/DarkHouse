@@ -10,6 +10,8 @@
 
 #include "ui/panel.hpp"
 
+#include <glm/vec2.hpp>
+
 #include <array>
 
 namespace darkhouse::ui {
@@ -39,6 +41,37 @@ class MetadataPanel final : public Panel {
 public:
     MetadataPanel() noexcept : Panel(PanelId::METADATA) {}
     void draw(PanelContext& ctx) override;
+};
+
+// Library thumbnail grid of the visible assets.
+class LibraryGridPanel final : public Panel {
+public:
+    LibraryGridPanel() noexcept : Panel(PanelId::ASSET_GRID) {}
+    void draw(PanelContext& ctx) override;
+    [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
+};
+
+// The developed canvas (the develop graph's output texture), with zoom and pan.
+class ViewportPanel final : public Panel {
+public:
+    ViewportPanel() noexcept : Panel(PanelId::VIEWPORT) {}
+    void draw(PanelContext& ctx) override;
+    [[nodiscard]] bool fullBleed() const noexcept override { return true; }
+    [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override {
+        return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    }
+
+private:
+    float zoom_ = 0.0f;           // canvas pixels per screen pixel; 0 = fit to view
+    glm::vec2 pan_{0.0f, 0.0f};   // offset of the image centre from the view centre, in screen pixels
+};
+
+// Horizontal strip of the visible assets.
+class FilmstripPanel final : public Panel {
+public:
+    FilmstripPanel() noexcept : Panel(PanelId::FILMSTRIP) {}
+    void draw(PanelContext& ctx) override;
+    [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
 };
 
 }  // namespace darkhouse::ui

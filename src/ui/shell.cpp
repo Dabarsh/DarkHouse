@@ -55,6 +55,9 @@ std::unique_ptr<Panel> makePanel(PanelId id) {
     case PanelId::COLLECTIONS: return std::make_unique<CollectionsPanel>();
     case PanelId::SEARCH: return std::make_unique<SearchPanel>();
     case PanelId::METADATA: return std::make_unique<MetadataPanel>();
+    case PanelId::ASSET_GRID: return std::make_unique<LibraryGridPanel>();
+    case PanelId::VIEWPORT: return std::make_unique<ViewportPanel>();
+    case PanelId::FILMSTRIP: return std::make_unique<FilmstripPanel>();
     case PanelId::ENGINE: return std::make_unique<EnginePanel>();
     default: return std::make_unique<PlaceholderPanel>(id);
     }
