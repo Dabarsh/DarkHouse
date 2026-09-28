@@ -191,6 +191,7 @@ add_library(darkhouse_core STATIC
     include/denoise_node.hpp
     include/image_decoder.hpp
     src/tiff_reader.hpp
+    src/parallel.hpp
     shaders/denoise_config.h
     include/ui/library_model.hpp
     schema/catalog.sql)
@@ -301,6 +302,13 @@ if(DARKHOUSE_BUILD_TESTS)
     darkhouse_apply_build_flags(darkhouse_library_model_test)
     add_test(NAME library_model COMMAND darkhouse_library_model_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
     set_tests_properties(library_model PROPERTIES LABELS "catalog" TIMEOUT 60)
+
+    add_executable(darkhouse_layer_stack_test tests/layer_stack_test.cpp)
+    target_link_libraries(darkhouse_layer_stack_test PRIVATE darkhouse_core)
+    target_include_directories(darkhouse_layer_stack_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")  # parallel.hpp
+    darkhouse_apply_build_flags(darkhouse_layer_stack_test)
+    add_test(NAME layer_stack COMMAND darkhouse_layer_stack_test)
+    set_tests_properties(layer_stack PROPERTIES LABELS "layers" TIMEOUT 120)
 
     add_executable(darkhouse_denoise_test tests/denoise_test.cpp)
     target_link_libraries(darkhouse_denoise_test PRIVATE darkhouse_core)

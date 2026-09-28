@@ -5,8 +5,53 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define DARKHOUSE_X86 1
+#include <immintrin.h>
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define DARKHOUSE_TARGET_F16C
+#else
+#define DARKHOUSE_TARGET_F16C __attribute__((target("avx,f16c")))
+#endif
+#endif
+
 namespace darkhouse {
 namespace {
+
+#if DARKHOUSE_X86
+// F16C converts 8 values per instruction, rounding to nearest even like
+// floatToHalf. Compiled for F16C here and only called after the CPU check.
+DARKHOUSE_TARGET_F16C void floatsToHalvesF16C(const float* in, std::uint16_t* out, std::size_t count) noexcept {
+    std::size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        const __m128i halves = _mm256_cvtps_ph(_mm256_loadu_ps(in + i), _MM_FROUND_TO_NEAREST_INT);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i), halves);
+    }
+    for (; i < count; ++i) out[i] = floatToHalf(in[i]);
+}
+
+DARKHOUSE_TARGET_F16C void halvesToFloatsF16C(const std::uint16_t* in, float* out, std::size_t count) noexcept {
+    std::size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        _mm256_storeu_ps(out + i, _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i))));
+    }
+    for (; i < count; ++i) out[i] = halfToFloat(in[i]);
+}
+
+bool cpuHasF16C() noexcept {
+#if defined(_MSC_VER) && !defined(__clang__)
+    int info[4];
+    __cpuid(info, 1);
+    const bool avx = (info[2] & (1 << 28)) != 0, osxsave = (info[2] & (1 << 27)) != 0, f16c = (info[2] & (1 << 29)) != 0;
+    return avx && osxsave && f16c && (_xgetbv(0) & 6) == 6;  // the OS saves the YMM registers
+#else
+    return __builtin_cpu_supports("avx") && __builtin_cpu_supports("f16c");
+#endif
+}
+
+const bool kHasF16C = cpuHasF16C();
+#endif
 
 float clamp01(float v) noexcept { return std::clamp(v, 0.0f, 1.0f); }
 
@@ -45,6 +90,14 @@ bool sampleRasterTile(const SparseRasterLayer& layer, TileKey key, std::uint32_t
     out.assign(std::size_t{tw} * th * 4, layer.defaultValue());
     if (!tile) return true;
     const std::uint32_t channels = tile->channels;
+    if (channels == 4) {  // colour layers: whole rows at once
+        const std::uint32_t columns = std::min(tw, tile->width);
+        for (std::uint32_t y = 0; y < std::min(th, tile->height); ++y) {
+            halvesToFloats(tile->data.data() + tile->index(0, y), out.data() + std::size_t{y} * tw * 4,
+                           std::size_t{columns} * 4);
+        }
+        return true;
+    }
     for (std::uint32_t y = 0; y < std::min(th, tile->height); ++y) {
         for (std::uint32_t x = 0; x < std::min(tw, tile->width); ++x) {
             const std::uint16_t* texel = tile->data.data() + tile->index(x, y);
@@ -87,7 +140,69 @@ void compositeInto(const LayerNode& node, TileKey key, std::uint32_t tw, std::ui
     }
 }
 
+// The raster layer `root` composites to unchanged, if there is one (see
+// compositeTileHalf): every other child is hidden, fully transparent or
+// GPU-only content that the CPU compositor skips anyway.
+const SparseRasterLayer* passThroughRaster(const LayerNode& root, std::uint32_t width, std::uint32_t height) {
+    if (!root.isGroup() || !root.visible() || root.opacity() < 1.0f || root.maskEnabled()) return nullptr;
+    const SparseRasterLayer* only = nullptr;
+    for (std::size_t i = 0; i < root.childCount(); ++i) {
+        const LayerNode& child = root.child(i);
+        if (!child.visible() || child.opacity() <= 0.0f) continue;
+        if (child.isGroup()) return nullptr;
+        const SparseRasterLayer* raster = child.raster();
+        if (!raster) continue;
+        if (only || child.opacity() < 1.0f || child.maskEnabled() || raster->channels() != 4 ||
+            raster->width() != width || raster->height() != height) {
+            return nullptr;
+        }
+        only = raster;
+    }
+    return only;
+}
+
+// Source-over of one straight-alpha pixel onto transparency, in binary16:
+// alpha clamps to [0, 1], a pixel without positive alpha (NaN included)
+// becomes transparent black, -0 becomes +0 and NaN is canonical, exactly as
+// blendPixel's float arithmetic does it for finite values.
+void copyOverTransparent(const std::uint16_t* in, std::uint16_t* out, std::size_t pixels) noexcept {
+    for (std::size_t p = 0; p < pixels; ++p, in += 4, out += 4) {
+        const std::uint16_t alpha = in[3];
+        if (alpha == 0 || (alpha & 0x8000u) != 0 || alpha > 0x7C00u) {  // +0, negative (and -0), NaN
+            out[0] = out[1] = out[2] = out[3] = 0;
+            continue;
+        }
+        for (int c = 0; c < 3; ++c) {
+            const std::uint16_t v = in[c];
+            out[c] = v == 0x8000u ? std::uint16_t{0}
+                     : (v & 0x7FFFu) > 0x7C00u ? static_cast<std::uint16_t>((v & 0x8000u) | 0x7E00u)
+                                               : v;
+        }
+        out[3] = std::min<std::uint16_t>(alpha, 0x3C00u);  // positive halves order like integers; 0x3C00 = 1.0
+    }
+}
+
 }  // namespace
+
+void floatsToHalves(const float* in, std::uint16_t* out, std::size_t count) noexcept {
+#if DARKHOUSE_X86
+    if (kHasF16C) {
+        floatsToHalvesF16C(in, out, count);
+        return;
+    }
+#endif
+    for (std::size_t i = 0; i < count; ++i) out[i] = floatToHalf(in[i]);
+}
+
+void halvesToFloats(const std::uint16_t* in, float* out, std::size_t count) noexcept {
+#if DARKHOUSE_X86
+    if (kHasF16C) {
+        halvesToFloatsF16C(in, out, count);
+        return;
+    }
+#endif
+    for (std::size_t i = 0; i < count; ++i) out[i] = halfToFloat(in[i]);
+}
 
 // -----------------------------------------------------------------------------
 // SparseRasterLayer
@@ -153,12 +268,13 @@ void SparseRasterLayer::readPixel(std::uint32_t x, std::uint32_t y, std::span<fl
     for (std::uint32_t c = 0; c < channels_; ++c) out[c] = halfToFloat(texel[c]);
 }
 
-void SparseRasterLayer::writeRegion(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
-                                    std::span<const float> source, std::size_t srcRowStride) {
+template <class T, class CopyRow>
+void SparseRasterLayer::writeRegionRows(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
+                                        std::span<const T> source, std::size_t srcRowStride, CopyRow copyRow) {
     if (w == 0 || h == 0) return;
-    const std::size_t rowFloats = std::size_t{w} * channels_;
-    if (srcRowStride == 0) srcRowStride = rowFloats;
-    if (srcRowStride < rowFloats || source.size() < (std::size_t{h} - 1) * srcRowStride + rowFloats) {
+    const std::size_t rowValues = std::size_t{w} * channels_;
+    if (srcRowStride == 0) srcRowStride = rowValues;
+    if (srcRowStride < rowValues || source.size() < (std::size_t{h} - 1) * srcRowStride + rowValues) {
         throw std::invalid_argument("writeRegion: source buffer is smaller than the region");
     }
     if (x >= width_ || y >= height_) return;
@@ -177,13 +293,24 @@ void SparseRasterLayer::writeRegion(std::uint32_t x, std::uint32_t y, std::uint3
             const std::uint32_t cy1 = std::min(y1, tileY0 + tile.height);
             const std::size_t count = std::size_t{cx1 - cx0} * channels_;
             for (std::uint32_t py = cy0; py < cy1; ++py) {
-                const float* src = source.data() + std::size_t{py - y} * srcRowStride + std::size_t{cx0 - x} * channels_;
-                std::uint16_t* dst = tile.data.data() + tile.index(cx0 - tileX0, py - tileY0);
-                for (std::size_t i = 0; i < count; ++i) dst[i] = floatToHalf(src[i]);
+                const T* src = source.data() + std::size_t{py - y} * srcRowStride + std::size_t{cx0 - x} * channels_;
+                copyRow(src, tile.data.data() + tile.index(cx0 - tileX0, py - tileY0), count);
             }
             markTileDirty(key, tile);
         }
     }
+}
+
+void SparseRasterLayer::writeRegion(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
+                                    std::span<const float> source, std::size_t srcRowStride) {
+    writeRegionRows(x, y, w, h, source, srcRowStride, floatsToHalves);
+}
+
+void SparseRasterLayer::writeRegion(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
+                                    std::span<const std::uint16_t> source, std::size_t srcRowStride) {
+    writeRegionRows(x, y, w, h, source, srcRowStride, [](const std::uint16_t* src, std::uint16_t* dst, std::size_t n) {
+        std::copy_n(src, n, dst);
+    });
 }
 
 void SparseRasterLayer::markDirtyRegion(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h) {
@@ -361,6 +488,31 @@ CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_
     out.height = std::min(TILE_SIZE, canvasHeight - key.ty * TILE_SIZE);
     out.rgba.assign(std::size_t{out.width} * out.height * 4, 0.0f);
     compositeInto(root, key, out.width, out.height, out.rgba);
+    return out;
+}
+
+CompositedTileHalf compositeTileHalf(const LayerNode& root, TileKey key, std::uint32_t canvasWidth,
+                                     std::uint32_t canvasHeight) {
+    CompositedTileHalf out;
+    if (const SparseRasterLayer* raster = passThroughRaster(root, canvasWidth, canvasHeight)) {
+        if (key.tx >= raster->tilesX() || key.ty >= raster->tilesY()) {
+            throw std::out_of_range("compositeTileHalf: tile outside the canvas");
+        }
+        out.width = std::min(TILE_SIZE, canvasWidth - key.tx * TILE_SIZE);
+        out.height = std::min(TILE_SIZE, canvasHeight - key.ty * TILE_SIZE);
+        out.rgba.resize(std::size_t{out.width} * out.height * 4);  // the layer's tile has the same shape
+        if (const PixelTile* tile = raster->getTile(key)) {
+            copyOverTransparent(tile->data.data(), out.rgba.data(), std::size_t{out.width} * out.height);
+        } else {
+            std::fill(out.rgba.begin(), out.rgba.end(), std::uint16_t{0});
+        }
+        return out;
+    }
+    const CompositedTile tile = compositeTileCPU(root, key, canvasWidth, canvasHeight);
+    out.width = tile.width;
+    out.height = tile.height;
+    out.rgba.resize(tile.rgba.size());
+    floatsToHalves(tile.rgba.data(), out.rgba.data(), tile.rgba.size());
     return out;
 }
 

@@ -87,6 +87,12 @@ inline constexpr std::uint32_t TILE_SIZE = 512;
     return out;
 }
 
+// Bulk forms of the two conversions above, with identical results (NaN
+// payloads aside). They use the F16C instructions when the CPU has them,
+// about 10x faster than the scalar code.
+void floatsToHalves(const float* in, std::uint16_t* out, std::size_t count) noexcept;
+void halvesToFloats(const std::uint16_t* in, float* out, std::size_t count) noexcept;
+
 // -----------------------------------------------------------------------------
 // Tiles
 // -----------------------------------------------------------------------------
@@ -160,6 +166,9 @@ public:
     // packed. The tile-at-a-time loop keeps this fast for brushes and imports.
     void writeRegion(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
                      std::span<const float> source, std::size_t srcRowStride = 0);
+    // The same with binary16 source values, copied without conversion.
+    void writeRegion(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
+                     std::span<const std::uint16_t> source, std::size_t srcRowStride = 0);
 
     [[nodiscard]] const PixelTile* getTile(TileKey key) const noexcept;
     [[nodiscard]] PixelTile* getTile(TileKey key) noexcept;
@@ -183,6 +192,9 @@ public:
 
 private:
     void markTileDirty(TileKey key, PixelTile& tile);
+    template <class T, class CopyRow>
+    void writeRegionRows(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h, std::span<const T> source,
+                         std::size_t srcRowStride, CopyRow copyRow);
 
     std::uint32_t width_;
     std::uint32_t height_;
@@ -348,5 +360,19 @@ struct CompositedTile {
 // and are skipped here. Used for thumbnails, tests and GPU parity checks.
 [[nodiscard]] CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_t canvasWidth,
                                               std::uint32_t canvasHeight);
+
+struct CompositedTileHalf {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint16_t> rgba;  // binary16, the canvas texture's format
+};
+
+// compositeTileCPU in the GPU upload format. When the document is one raster
+// layer shown as is (visible, full opacity, no mask, canvas-sized, the only
+// visible pixel content: an opened photo), its tile is copied instead of
+// composited, with the same result for every finite pixel. Thread-safe as
+// long as nobody modifies the document.
+[[nodiscard]] CompositedTileHalf compositeTileHalf(const LayerNode& root, TileKey key, std::uint32_t canvasWidth,
+                                                   std::uint32_t canvasHeight);
 
 }  // namespace darkhouse

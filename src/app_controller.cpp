@@ -1,5 +1,7 @@
 #include "app_controller.hpp"
 
+#include "parallel.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -518,25 +520,28 @@ void DarkHouseApp::replaceDocument(std::unique_ptr<LayerNode> document, std::uin
 
 void DarkHouseApp::uploadDirtyCanvasTiles() {
     if (!gpu_) return;
-    const std::vector<TileKey> dirty = takeDirtyTiles(*document_);
+    std::vector<TileKey> dirty = takeDirtyTiles(*document_);
+    // A layer larger than the canvas can report tiles the canvas does not have.
+    const std::uint32_t tilesX = (canvasWidth_ + TILE_SIZE - 1) / TILE_SIZE;
+    const std::uint32_t tilesY = (canvasHeight_ + TILE_SIZE - 1) / TILE_SIZE;
+    std::erase_if(dirty, [&](const TileKey& key) { return key.tx >= tilesX || key.ty >= tilesY; });
     if (dirty.empty()) return;
 
-    // Composite on the CPU, convert to FP16 and upload in one submission.
-    std::vector<std::vector<std::uint16_t>> texels;
+    // Composite to FP16 on all cores (tiles are independent and the document
+    // is only read), then upload everything in one submission.
+    std::vector<CompositedTileHalf> tiles(dirty.size());
+    detail::parallelFor(dirty.size(), 1, [&](std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) tiles[i] = compositeTileHalf(*document_, dirty[i], canvasWidth_, canvasHeight_);
+    });
     std::vector<VulkanContext::RegionUpload> uploads;
-    texels.reserve(dirty.size());
     uploads.reserve(dirty.size());
-    for (const TileKey& key : dirty) {
-        const CompositedTile tile = compositeTileCPU(*document_, key, canvasWidth_, canvasHeight_);
-        std::vector<std::uint16_t>& halves = texels.emplace_back(tile.rgba.size());
-        std::transform(tile.rgba.begin(), tile.rgba.end(), halves.begin(), floatToHalf);
-
+    for (std::size_t i = 0; i < dirty.size(); ++i) {
         VulkanContext::RegionUpload upload;
-        upload.x = key.tx * TILE_SIZE;
-        upload.y = key.ty * TILE_SIZE;
-        upload.width = tile.width;
-        upload.height = tile.height;
-        upload.texels = std::as_bytes(std::span<const std::uint16_t>(halves));
+        upload.x = dirty[i].tx * TILE_SIZE;
+        upload.y = dirty[i].ty * TILE_SIZE;
+        upload.width = tiles[i].width;
+        upload.height = tiles[i].height;
+        upload.texels = std::as_bytes(std::span<const std::uint16_t>(tiles[i].rgba));
         uploads.push_back(upload);
     }
     gpu_->uploadRegions(canvasTexture_, uploads);
