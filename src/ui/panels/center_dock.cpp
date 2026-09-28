@@ -200,7 +200,9 @@ void ViewportPanel::draw(PanelContext& ctx) {
         pan_ = glm::vec2(0.0f);
     }
 
-    // Interaction surface covering the whole view.
+    // Interaction surface covering the whole view. The toolbar drawn over it
+    // later must still get the mouse, so it allows overlap.
+    ImGui::SetNextItemAllowOverlap();
     ImGui::InvisibleButton("##Canvas", region,
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
     const bool hovered = ImGui::IsItemHovered();
