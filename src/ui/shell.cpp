@@ -65,11 +65,11 @@ DarkHouseShell::DarkHouseShell() {
 DarkHouseShell::~DarkHouseShell() = default;
 
 void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngine& gui) {
-    PanelContext ctx{app, frame, gui};
-
     std::vector<std::string> dropped = gui.window().takeDroppedPaths();
     if (!dropped.empty()) startImportScan(std::move(dropped));
     pollImportScan(app);
+    library_.update(app);
+    PanelContext ctx{app, frame, gui, library_};
 
     handleShortcuts(ctx);
     // Bars shrink the main viewport's work area, so they come before the dockspace.

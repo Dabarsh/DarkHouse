@@ -7,6 +7,7 @@
 #pragma once
 
 #include "gui_engine.hpp"
+#include "ui/library_model.hpp"
 
 #include <imgui.h>
 
@@ -45,6 +46,7 @@ struct PanelContext {
     DarkHouseApp& app;
     const FrameContext& frame;
     GuiEngine& gui;
+    LibraryModel& library;  // collection, filter, sort and selection shared by the catalog panels
 };
 
 class Panel {

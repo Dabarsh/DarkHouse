@@ -152,11 +152,13 @@ if(DARKHOUSE_GUI)
         src/ui/shell.cpp
         src/ui/panel.cpp
         src/ui/workspace_layout.cpp
+        src/ui/library_model.cpp
         include/platform_window.hpp
         include/gui_engine.hpp
         include/ui/shell.hpp
         include/ui/panel.hpp
-        include/ui/workspace_layout.hpp)
+        include/ui/workspace_layout.hpp
+        include/ui/library_model.hpp)
     target_link_libraries(DarkHouse PRIVATE DarkHouse::imgui glfw glm::glm)
     target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_WITH_GUI=1)
 endif()
