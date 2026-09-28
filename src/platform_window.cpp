@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 
 namespace darkhouse {
 namespace {
@@ -82,6 +83,7 @@ PlatformWindow::PlatformWindow(const WindowOptions& options) {
     glfwSetWindowSizeLimits(window_, 640, 400, GLFW_DONT_CARE, GLFW_DONT_CARE);
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, &PlatformWindow::onFramebufferSize);
+    glfwSetDropCallback(window_, &PlatformWindow::onDrop);
 }
 
 PlatformWindow::~PlatformWindow() {
@@ -133,6 +135,8 @@ bool PlatformWindow::consumeFramebufferResized() noexcept {
     return resized;
 }
 
+std::vector<std::string> PlatformWindow::takeDroppedPaths() { return std::exchange(droppedPaths_, {}); }
+
 void PlatformWindow::pollEvents() { glfwPollEvents(); }
 void PlatformWindow::waitEvents() { glfwWaitEvents(); }
 void PlatformWindow::waitEventsTimeout(double seconds) { glfwWaitEventsTimeout(seconds); }
@@ -140,6 +144,12 @@ void PlatformWindow::postEmptyEvent() { glfwPostEmptyEvent(); }
 
 void PlatformWindow::onFramebufferSize(GLFWwindow* window, int, int) {
     if (auto* self = static_cast<PlatformWindow*>(glfwGetWindowUserPointer(window))) self->framebufferResized_ = true;
+}
+
+void PlatformWindow::onDrop(GLFWwindow* window, int count, const char** paths) {
+    auto* self = static_cast<PlatformWindow*>(glfwGetWindowUserPointer(window));
+    if (!self) return;
+    for (int i = 0; i < count; ++i) self->droppedPaths_.emplace_back(paths[i]);  // GLFW frees them after the callback
 }
 
 }  // namespace darkhouse

@@ -109,6 +109,7 @@ add_executable(DarkHouse
     src/app_controller.cpp
     src/asset_manager.cpp
     src/import_scan.cpp
+    src/app_paths.cpp
     src/vulkan_context.cpp
     src/swapchain.cpp
     src/render_pipeline.cpp
@@ -117,6 +118,7 @@ add_executable(DarkHouse
     include/app_controller.hpp
     include/asset_manager.hpp
     include/import_scan.hpp
+    include/app_paths.hpp
     include/vulkan_context.hpp
     include/vulkan_utils.hpp
     include/swapchain.hpp
@@ -148,9 +150,13 @@ if(DARKHOUSE_GUI)
         src/platform_window.cpp
         src/gui_engine.cpp
         src/ui/shell.cpp
+        src/ui/panel.cpp
+        src/ui/workspace_layout.cpp
         include/platform_window.hpp
         include/gui_engine.hpp
-        include/ui/shell.hpp)
+        include/ui/shell.hpp
+        include/ui/panel.hpp
+        include/ui/workspace_layout.hpp)
     target_link_libraries(DarkHouse PRIVATE DarkHouse::imgui glfw glm::glm)
     target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_WITH_GUI=1)
 endif()

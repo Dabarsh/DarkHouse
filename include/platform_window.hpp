@@ -54,6 +54,8 @@ public:
 
     // Returns true once after the framebuffer was resized, then resets.
     [[nodiscard]] bool consumeFramebufferResized() noexcept;
+    // Files and folders dropped onto the window since the last call (UTF-8 paths).
+    [[nodiscard]] std::vector<std::string> takeDroppedPaths();
 
     // Event pumping. Must be called from the main thread.
     static void pollEvents();
@@ -63,9 +65,11 @@ public:
 
 private:
     static void onFramebufferSize(GLFWwindow* window, int width, int height);
+    static void onDrop(GLFWwindow* window, int count, const char** paths);
 
     GLFWwindow* window_ = nullptr;
     bool framebufferResized_ = false;
+    std::vector<std::string> droppedPaths_;
 };
 
 }  // namespace darkhouse

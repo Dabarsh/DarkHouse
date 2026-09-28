@@ -2,6 +2,7 @@
 // application controller.
 
 #include "app_controller.hpp"
+#include "app_paths.hpp"
 #include "import_scan.hpp"
 
 #ifdef DARKHOUSE_WITH_GUI
@@ -69,6 +70,7 @@ void printUsage(std::ostream& out) {
            "  --maximized             open the window maximized\n"
            "  --no-vsync              present without waiting for the display refresh\n"
            "  --viewports             allow dragging panels out into their own OS windows\n"
+           "  --layout <file>         UI layout file (default: <user config dir>/DarkHouse/layout.ini)\n"
            "  --no-gpu                skip Vulkan initialization (implies --headless)\n"
            "  --validation            enable Vulkan validation layers (default in Debug builds;\n"
            "                          env DARKHOUSE_VULKAN_VALIDATION=0/1 overrides the build default)\n"
@@ -126,6 +128,7 @@ struct CommandLine {
     bool maximized = false;
     bool vsync = true;
     bool multiViewport = false;
+    std::optional<std::filesystem::path> layoutFile;
     bool help = false;
     bool version = false;
 };
@@ -228,6 +231,10 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
             cli.vsync = false;
         } else if (arg == "--viewports") {
             cli.multiViewport = true;
+        } else if (arg == "--layout") {
+            const auto v = value();
+            if (!v) return fail("--layout needs a file");
+            cli.layoutFile = fs::path(*v);
         } else if (arg == "--no-gpu") {
             cli.config.enableGpu = false;
             cli.headless = true;  // the UI renders with Vulkan
@@ -261,6 +268,7 @@ std::unique_ptr<FrontEnd> createDesktopFrontEnd(const CommandLine& cli) {
         options.window.maximized = cli.maximized;
         options.vsync = cli.vsync;
         options.multiViewport = cli.multiViewport;
+        options.iniPath = cli.layoutFile.value_or(userConfigDirectory() / "layout.ini");
         return std::make_unique<GuiEngine>(std::move(options), std::make_unique<ui::DarkHouseShell>());
     } catch (const std::exception& e) {
         std::clog << "[DarkHouse] warn: cannot open the DarkHouse window (" << e.what() << "); running headless\n";

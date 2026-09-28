@@ -1,0 +1,87 @@
+// DarkHouse — dockable UI panels.
+//
+// A Panel draws the contents of one dockable window. The shell owns the
+// window itself (Begin/End, open state, docking), so the same Panel object
+// serves every workspace: each workspace docks its own window instance of it
+// (see WorkspaceLayoutManager::windowName).
+#pragma once
+
+#include "gui_engine.hpp"
+
+#include <imgui.h>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+
+namespace darkhouse::ui {
+
+enum class PanelId : std::uint8_t {
+    COLLECTIONS,  // left:   file / collection browser
+    SEARCH,       // left:   search and filter
+    METADATA,     // left:   metadata inspector
+    ASSET_GRID,   // center: library thumbnail grid
+    VIEWPORT,     // center: developed canvas
+    FILMSTRIP,    // bottom: horizontal strip of the current collection
+    LAYERS,       // right:  unified layer stack
+    ADJUSTMENTS,  // right:  tone / HSL / colour adjustments
+    ENGINE,       // floating diagnostics
+};
+inline constexpr std::size_t kPanelCount = 9;
+
+struct PanelInfo {
+    PanelId id;
+    const char* title;        // shown on the tab / title bar
+    const char* key;          // stable ID fragment used in window names and settings
+    const char* description;  // one line, shown in menus and tooltips
+};
+
+[[nodiscard]] const PanelInfo& panelInfo(PanelId id) noexcept;
+[[nodiscard]] const std::array<PanelId, kPanelCount>& allPanels() noexcept;
+[[nodiscard]] constexpr std::size_t index(PanelId id) noexcept { return static_cast<std::size_t>(id); }
+
+// Everything a panel may touch while drawing one frame.
+struct PanelContext {
+    DarkHouseApp& app;
+    const FrameContext& frame;
+    GuiEngine& gui;
+};
+
+class Panel {
+public:
+    explicit Panel(PanelId id) noexcept : id_(id) {}
+    virtual ~Panel() = default;
+
+    Panel(const Panel&) = delete;
+    Panel& operator=(const Panel&) = delete;
+
+    [[nodiscard]] PanelId id() const noexcept { return id_; }
+    [[nodiscard]] const PanelInfo& info() const noexcept { return panelInfo(id_); }
+
+    // Draws the window contents; the window is already begun and visible.
+    virtual void draw(PanelContext& ctx) = 0;
+
+    [[nodiscard]] virtual ImGuiWindowFlags windowFlags() const noexcept { return ImGuiWindowFlags_None; }
+    // Edge-to-edge content (image views): the shell removes window padding.
+    [[nodiscard]] virtual bool fullBleed() const noexcept { return false; }
+
+private:
+    PanelId id_;
+};
+
+// Stand-in body for panels whose implementation has not landed yet: shows the
+// panel's role so layouts can be evaluated with every dock populated.
+class PlaceholderPanel final : public Panel {
+public:
+    using Panel::Panel;
+    void draw(PanelContext& ctx) override;
+};
+
+// GPU, swapchain and frame-timing diagnostics.
+class EnginePanel final : public Panel {
+public:
+    EnginePanel() noexcept : Panel(PanelId::ENGINE) {}
+    void draw(PanelContext& ctx) override;
+};
+
+}  // namespace darkhouse::ui
