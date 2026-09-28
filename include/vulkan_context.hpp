@@ -54,6 +54,17 @@ struct GPUTexture {
     [[nodiscard]] bool valid() const noexcept { return image != VK_NULL_HANDLE; }
 };
 
+// Plain buffer handle bundle, managed by VulkanContext::createBuffer() and
+// destroyBuffer(). Host-visible buffers stay persistently mapped.
+struct GPUBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
+    void* mapped = nullptr;  // non-null for host-visible (coherent) buffers
+
+    [[nodiscard]] bool valid() const noexcept { return buffer != VK_NULL_HANDLE; }
+};
+
 struct VulkanContextOptions {
     std::string applicationName = "DarkHouse";
     // Uses VK_LAYER_KHRONOS_validation when it is installed and routes its
@@ -113,6 +124,12 @@ public:
     // Safe to call on an empty texture. Resets `texture` to its default state.
     void destroyTexture(GPUTexture& texture) const noexcept;
 
+    // hostVisible: HOST_VISIBLE | HOST_COHERENT memory, persistently mapped
+    // (staging, readback, small parameter blocks); otherwise DEVICE_LOCAL.
+    [[nodiscard]] GPUBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible) const;
+    // Safe to call on an empty buffer. Resets `buffer` to its default state.
+    void destroyBuffer(GPUBuffer& buffer) const noexcept;
+
     [[nodiscard]] VkShaderModule loadShaderModule(const std::filesystem::path& spirvPath) const;
 
     // Records into a one-shot command buffer, submits it to the compute queue
@@ -134,6 +151,11 @@ public:
     // Fills the texture with a solid colour. Needs TRANSFER_DST usage and
     // leaves the texture in VK_IMAGE_LAYOUT_GENERAL.
     void clearTexture(GPUTexture& texture, float r, float g, float b, float a) const;
+
+    // Copies the whole texture to host memory (tightly packed texels) and
+    // blocks until done. Needs TRANSFER_SRC usage; leaves the texture in
+    // VK_IMAGE_LAYOUT_GENERAL. For tests, export and tools, not per frame.
+    [[nodiscard]] std::vector<std::byte> downloadTexture(GPUTexture& texture) const;
 
 private:
     void createInstance(const VulkanContextOptions& options);

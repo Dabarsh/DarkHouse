@@ -1,0 +1,51 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse denoise, pass 3 of 5: noise histogram -> sigma -> band thresholds.
+// One tiny workgroup; the result stays on the GPU (no CPU round trip).
+
+#include "denoise_common.glsl"
+
+layout(local_size_x = 4) in;
+
+layout(std430, binding = 0) readonly buffer Histogram { uint bins[3 * DH_DENOISE_HIST_BINS]; } histogram;
+// thresholds[level * 4 + channel], then sigma[channel] at DH_DENOISE_MAX_LEVELS * 4.
+layout(std430, binding = 1) writeonly buffer Thresholds { float values[DH_DENOISE_PARAMS_FLOATS]; } thresholds;
+
+layout(push_constant) uniform Push {
+    vec4 params;  // luminance, chrominance, detail, noiseLevel (0 = estimate)
+} pc;
+
+const float kLevelNoise[DH_DENOISE_MAX_LEVELS] = float[](DH_DENOISE_LEVEL_NOISE);
+const float kLumaWeights[DH_DENOISE_MAX_LEVELS] = float[](DH_DENOISE_LUMA_WEIGHTS);
+const float kChromaWeights[DH_DENOISE_MAX_LEVELS] = float[](DH_DENOISE_CHROMA_WEIGHTS);
+
+float histogramMedian(uint channel) {
+    uint base = channel * DH_DENOISE_HIST_BINS;
+    uint total = 0u;
+    for (uint b = 0u; b < DH_DENOISE_HIST_BINS; ++b) total += histogram.bins[base + b];
+    if (total == 0u) return 0.0;
+    float midpoint = float(total) * 0.5;
+    uint below = 0u;
+    for (uint b = 0u; b < DH_DENOISE_HIST_BINS; ++b) {
+        uint count = histogram.bins[base + b];
+        if (count > 0u && float(below + count) >= midpoint) {
+            float fraction = (midpoint - float(below)) / float(count);
+            return exp2(float(DH_DENOISE_HIST_MIN_EXP) + (float(b) + fraction) / float(DH_DENOISE_HIST_BINS_PER_OCTAVE));
+        }
+        below += count;
+    }
+    return 0.0;
+}
+
+void main() {
+    uint channel = gl_LocalInvocationID.x;
+    if (channel >= 3u) return;
+    float sigma = pc.params.w > 0.0 ? pc.params.w : histogramMedian(channel) * float(DH_DENOISE_MAD_TO_SIGMA);
+    for (uint k = 0u; k < DH_DENOISE_MAX_LEVELS; ++k) {
+        float strength = channel == 0u
+            ? pc.params.x * float(DH_DENOISE_LUMA_SCALE) * kLumaWeights[k]
+            : pc.params.y * float(DH_DENOISE_CHROMA_SCALE) * kChromaWeights[k];
+        thresholds.values[k * 4u + channel] = strength * kLevelNoise[k] * sigma;
+    }
+    thresholds.values[DH_DENOISE_MAX_LEVELS * 4u + channel] = sigma;
+}

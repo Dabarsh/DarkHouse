@@ -1,0 +1,50 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse denoise, pass 2 of 5 (once per level): G_k -> G_(k+1), k >= 1.
+// Same shared-memory tiling and separable 5-tap binomial as denoise_down0.
+
+#include "denoise_common.glsl"
+
+layout(local_size_x = DH_DENOISE_GROUP, local_size_y = DH_DENOISE_GROUP) in;
+
+layout(binding = 0, rgba16f) uniform readonly image2D source;       // G_k
+layout(binding = 1, rgba16f) uniform writeonly image2D destination; // G_(k+1)
+
+layout(push_constant) uniform Push {
+    ivec2 inputSize;
+    ivec2 outputSize;
+} pc;
+
+shared vec4 tile[DH_DENOISE_TILE][DH_DENOISE_TILE];
+shared vec4 rows[DH_DENOISE_TILE][DH_DENOISE_GROUP];
+
+void main() {
+    const uint threads = DH_DENOISE_GROUP * DH_DENOISE_GROUP;
+    const uint index = gl_LocalInvocationIndex;
+    const ivec2 group = ivec2(gl_WorkGroupID.xy);
+    const ivec2 local = ivec2(gl_LocalInvocationID.xy);
+    const ivec2 origin = group * (2 * DH_DENOISE_GROUP) - 2;
+
+    for (uint i = index; i < DH_DENOISE_TILE * DH_DENOISE_TILE; i += threads) {
+        ivec2 t = ivec2(i % DH_DENOISE_TILE, i / DH_DENOISE_TILE);
+        ivec2 p = clamp(origin + t, ivec2(0), pc.inputSize - 1);
+        tile[t.y][t.x] = imageLoad(source, p);
+    }
+    barrier();
+
+    for (uint i = index; i < DH_DENOISE_TILE * DH_DENOISE_GROUP; i += threads) {
+        uint r = i / DH_DENOISE_GROUP;
+        uint c = i % DH_DENOISE_GROUP;
+        vec3 h = vec3(0.0);
+        for (uint k = 0u; k < 5u; ++k) h += kBinomial[k] * tile[r][2u * c + k].xyz;
+        rows[r][c] = vec4(h, 0.0);
+    }
+    barrier();
+
+    const ivec2 texel = group * DH_DENOISE_GROUP + local;
+    if (all(lessThan(texel, pc.outputSize))) {
+        vec3 v = vec3(0.0);
+        for (uint k = 0u; k < 5u; ++k) v += kBinomial[k] * rows[2 * local.y + int(k)][local.x].xyz;
+        imageStore(destination, texel, roundToHalf(vec4(v, 1.0)));
+    }
+}

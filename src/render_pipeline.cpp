@@ -1,5 +1,6 @@
 #include "render_pipeline.hpp"
 
+#include "denoise_node.hpp"
 #include "vulkan_utils.hpp"
 
 #include <algorithm>
@@ -187,6 +188,7 @@ std::vector<std::byte> ExposureNode::pack(const ExposureParams& params) {
 std::unique_ptr<ComputeNode> createComputeNode(std::string_view nodeType, const VulkanContext& context,
                                                const std::filesystem::path& shaderDirectory) {
     if (nodeType == ExposureNode::kTypeName) return std::make_unique<ExposureNode>(context, shaderDirectory);
+    if (nodeType == DenoiseNode::kTypeName) return std::make_unique<DenoiseNode>(context, shaderDirectory);
     throw std::invalid_argument("unknown compute node type '" + std::string(nodeType) + "'");
 }
 

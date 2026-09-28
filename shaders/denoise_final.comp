@@ -1,0 +1,40 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse denoise, pass 5 of 5: finest band and back to linear RGB.
+// Recomputes stabilised level 0 from the input (it is never stored), shrinks
+// d_0, keeps `detail` of the removed luma structure, adds up(R_1) and undoes
+// the opponent transform and the square root. Alpha passes through.
+
+#include "denoise_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba16f) uniform readonly image2D inputImage;    // linear RGBA
+layout(binding = 1, rgba16f) uniform readonly image2D level1;        // G_1
+layout(binding = 2, rgba16f) uniform readonly image2D result1;       // R_1 (G_1 when there is one level)
+layout(binding = 3, rgba16f) uniform writeonly image2D outputImage;  // linear RGBA
+layout(std430, binding = 4) readonly buffer Thresholds { float values[DH_DENOISE_PARAMS_FLOATS]; } thresholds;
+
+layout(push_constant) uniform Push {
+    ivec2 size;
+    ivec2 coarseSize;
+    float detail;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.size))) return;
+    vec4 source = imageLoad(inputImage, p);
+    vec3 s0 = stabilize(source.rgb);
+    ivec2 a, b;
+    upsampleTaps(p, pc.coarseSize, a, b);
+    vec3 upG = upsampleCombine(imageLoad(level1, a).xyz, imageLoad(level1, ivec2(b.x, a.y)).xyz,
+                               imageLoad(level1, ivec2(a.x, b.y)).xyz, imageLoad(level1, b).xyz);
+    vec3 upR = upsampleCombine(imageLoad(result1, a).xyz, imageLoad(result1, ivec2(b.x, a.y)).xyz,
+                               imageLoad(result1, ivec2(a.x, b.y)).xyz, imageLoad(result1, b).xyz);
+    vec3 threshold = vec3(thresholds.values[0], thresholds.values[1], thresholds.values[2]);
+    vec3 d = s0 - upG;
+    vec3 kept = shrink3(d, threshold);
+    kept.x += pc.detail * (d.x - kept.x);
+    imageStore(outputImage, p, roundToHalf(vec4(destabilize(upR + kept), source.a)));
+}

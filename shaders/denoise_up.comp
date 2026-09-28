@@ -1,0 +1,35 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse denoise, pass 4 of 5 (once per level, coarse to fine):
+//   R_k = up(R_(k+1)) + shrink(G_k - up(G_(k+1)), T_k)
+
+#include "denoise_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba16f) uniform readonly image2D fine;           // G_k
+layout(binding = 1, rgba16f) uniform readonly image2D coarse;         // G_(k+1)
+layout(binding = 2, rgba16f) uniform readonly image2D coarseResult;   // R_(k+1) (G_L at the coarsest level)
+layout(binding = 3, rgba16f) uniform writeonly image2D result;        // R_k
+layout(std430, binding = 4) readonly buffer Thresholds { float values[DH_DENOISE_PARAMS_FLOATS]; } thresholds;
+
+layout(push_constant) uniform Push {
+    ivec2 fineSize;
+    ivec2 coarseSize;
+    uint level;
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, pc.fineSize))) return;
+    ivec2 a, b;
+    upsampleTaps(p, pc.coarseSize, a, b);
+    vec3 upR = upsampleCombine(imageLoad(coarseResult, a).xyz, imageLoad(coarseResult, ivec2(b.x, a.y)).xyz,
+                               imageLoad(coarseResult, ivec2(a.x, b.y)).xyz, imageLoad(coarseResult, b).xyz);
+    vec3 upG = upsampleCombine(imageLoad(coarse, a).xyz, imageLoad(coarse, ivec2(b.x, a.y)).xyz,
+                               imageLoad(coarse, ivec2(a.x, b.y)).xyz, imageLoad(coarse, b).xyz);
+    uint base = pc.level * 4u;
+    vec3 threshold = vec3(thresholds.values[base], thresholds.values[base + 1u], thresholds.values[base + 2u]);
+    vec3 d = imageLoad(fine, p).xyz - upG;
+    imageStore(result, p, roundToHalf(vec4(upR + shrink3(d, threshold), 1.0)));
+}

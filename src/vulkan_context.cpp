@@ -586,6 +586,68 @@ void VulkanContext::submitAndWait(const std::function<void(VkCommandBuffer)>& re
     checkVk(vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
 }
 
+GPUBuffer VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool hostVisible) const {
+    if (size == 0) throw std::invalid_argument("createBuffer: zero-sized buffer");
+    GPUBuffer buffer;
+    buffer.size = size;
+    try {
+        VkBufferCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size = size;
+        info.usage = usage;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        checkVk(vkCreateBuffer(device_, &info, nullptr, &buffer.buffer), "vkCreateBuffer");
+
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device_, buffer.buffer, &requirements);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = requirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(
+            requirements.memoryTypeBits, hostVisible
+                                             ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                                             : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        checkVk(vkAllocateMemory(device_, &allocInfo, nullptr, &buffer.memory), "vkAllocateMemory (buffer)");
+        checkVk(vkBindBufferMemory(device_, buffer.buffer, buffer.memory, 0), "vkBindBufferMemory");
+        if (hostVisible) checkVk(vkMapMemory(device_, buffer.memory, 0, VK_WHOLE_SIZE, 0, &buffer.mapped), "vkMapMemory");
+    } catch (...) {
+        destroyBuffer(buffer);
+        throw;
+    }
+    return buffer;
+}
+
+void VulkanContext::destroyBuffer(GPUBuffer& buffer) const noexcept {
+    if (device_ != VK_NULL_HANDLE) {
+        if (buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device_, buffer.buffer, nullptr);
+        if (buffer.memory != VK_NULL_HANDLE) vkFreeMemory(device_, buffer.memory, nullptr);  // implicitly unmaps
+    }
+    buffer = GPUBuffer{};
+}
+
+std::vector<std::byte> VulkanContext::downloadTexture(GPUTexture& texture) const {
+    if (!texture.valid()) throw std::invalid_argument("downloadTexture: texture is not allocated");
+    const VkDeviceSize size = VkDeviceSize{texture.width} * texture.height * bytesPerPixel(texture.format);
+    GPUBuffer readback = createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, /*hostVisible=*/true);
+    ScopeExit cleanup([&] { destroyBuffer(readback); });
+
+    submitAndWait([&](VkCommandBuffer cmd) {
+        recordImageBarrier(cmd, texture, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {texture.width, texture.height, 1};
+        vkCmdCopyImageToBuffer(cmd, texture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &copy);
+        recordImageBarrier(cmd, texture, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE,
+                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+        recordMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
+                            VK_ACCESS_2_HOST_READ_BIT);
+    });
+    const auto* bytes = static_cast<const std::byte*>(readback.mapped);
+    return {bytes, bytes + size};
+}
+
 void VulkanContext::uploadRegions(GPUTexture& texture, std::span<const RegionUpload> regions) const {
     if (regions.empty()) return;
     if (!texture.valid()) throw std::invalid_argument("uploadRegions: texture is not allocated");
@@ -604,36 +666,14 @@ void VulkanContext::uploadRegions(GPUTexture& texture, std::span<const RegionUpl
         totalSize += alignUp(expected, kOffsetAlignment);
     }
 
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = totalSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VkBuffer staging = VK_NULL_HANDLE;
-    checkVk(vkCreateBuffer(device_, &bufferInfo, nullptr, &staging), "vkCreateBuffer");
-    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-    ScopeExit cleanup([&] {
-        vkDestroyBuffer(device_, staging, nullptr);
-        if (stagingMemory != VK_NULL_HANDLE) vkFreeMemory(device_, stagingMemory, nullptr);
-    });
-
-    VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(device_, staging, &requirements);
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = requirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(
-        requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    checkVk(vkAllocateMemory(device_, &allocInfo, nullptr, &stagingMemory), "vkAllocateMemory (staging)");
-    checkVk(vkBindBufferMemory(device_, staging, stagingMemory, 0), "vkBindBufferMemory");
-
-    void* mapped = nullptr;
-    checkVk(vkMapMemory(device_, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mapped), "vkMapMemory");
+    GPUBuffer staging = createBuffer(totalSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /*hostVisible=*/true);
+    ScopeExit cleanup([&] { destroyBuffer(staging); });
+    auto* mapped = static_cast<std::byte*>(staging.mapped);
     std::vector<VkBufferImageCopy> copies;
     copies.reserve(regions.size());
     VkDeviceSize offset = 0;
     for (const RegionUpload& region : regions) {
-        std::memcpy(static_cast<std::byte*>(mapped) + offset, region.texels.data(), region.texels.size());
+        std::memcpy(mapped + offset, region.texels.data(), region.texels.size());
         VkBufferImageCopy copy{};
         copy.bufferOffset = offset;
         copy.bufferRowLength = 0;  // tightly packed
@@ -651,13 +691,12 @@ void VulkanContext::uploadRegions(GPUTexture& texture, std::span<const RegionUpl
         copies.push_back(copy);
         offset += alignUp(region.texels.size(), kOffsetAlignment);
     }
-    vkUnmapMemory(device_, stagingMemory);
 
     submitAndWait([&](VkCommandBuffer cmd) {
         recordImageBarrier(cmd, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        vkCmdCopyBufferToImage(cmd, staging, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        vkCmdCopyBufferToImage(cmd, staging.buffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                static_cast<std::uint32_t>(copies.size()), copies.data());
         recordImageBarrier(cmd, texture, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,

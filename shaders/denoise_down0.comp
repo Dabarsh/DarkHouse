@@ -1,0 +1,81 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse denoise, pass 1 of 5: full-size input -> pyramid level 1.
+//
+// Fuses what would otherwise be three full-resolution passes: the input is
+// read once into a shared-memory tile, stabilised and converted to the
+// opponent space there, filtered with a separable 5-tap binomial to produce
+// G_1, and (for every DH_DENOISE_SAMPLE_STRIDE-th workgroup) its 2x2 Haar HH
+// coefficients are binned into the noise histogram. Level 0 is never stored.
+
+#include "denoise_common.glsl"
+
+layout(local_size_x = DH_DENOISE_GROUP, local_size_y = DH_DENOISE_GROUP) in;
+
+layout(binding = 0, rgba16f) uniform readonly image2D inputImage;  // linear RGBA
+layout(binding = 1, rgba16f) uniform writeonly image2D level1;     // G_1 (Y, C1, C2)
+layout(std430, binding = 2) buffer Histogram { uint bins[3 * DH_DENOISE_HIST_BINS]; } histogram;
+
+layout(push_constant) uniform Push {
+    ivec2 inputSize;
+    ivec2 outputSize;
+} pc;
+
+shared vec4 tile[DH_DENOISE_TILE][DH_DENOISE_TILE];     // stabilised level 0 (+2 texel apron)
+shared vec4 rows[DH_DENOISE_TILE][DH_DENOISE_GROUP];    // after the horizontal filter
+shared uint localBins[3 * DH_DENOISE_HIST_BINS];
+
+void main() {
+    const uint threads = DH_DENOISE_GROUP * DH_DENOISE_GROUP;
+    const uint index = gl_LocalInvocationIndex;
+    const ivec2 group = ivec2(gl_WorkGroupID.xy);
+    const ivec2 local = ivec2(gl_LocalInvocationID.xy);
+    const ivec2 origin = group * (2 * DH_DENOISE_GROUP) - 2;
+    const bool sampled = ((group.x + group.y) % DH_DENOISE_SAMPLE_STRIDE) == 0;  // uniform per workgroup
+
+    if (sampled) {
+        for (uint i = index; i < 3u * DH_DENOISE_HIST_BINS; i += threads) localBins[i] = 0u;
+    }
+    for (uint i = index; i < DH_DENOISE_TILE * DH_DENOISE_TILE; i += threads) {
+        ivec2 t = ivec2(i % DH_DENOISE_TILE, i / DH_DENOISE_TILE);
+        ivec2 p = clamp(origin + t, ivec2(0), pc.inputSize - 1);
+        tile[t.y][t.x] = vec4(stabilize(imageLoad(inputImage, p).rgb), 0.0);
+    }
+    barrier();
+
+    for (uint i = index; i < DH_DENOISE_TILE * DH_DENOISE_GROUP; i += threads) {
+        uint r = i / DH_DENOISE_GROUP;
+        uint c = i % DH_DENOISE_GROUP;
+        vec3 h = vec3(0.0);
+        for (uint k = 0u; k < 5u; ++k) h += kBinomial[k] * tile[r][2u * c + k].xyz;
+        rows[r][c] = vec4(h, 0.0);
+    }
+    barrier();
+
+    const ivec2 texel = group * DH_DENOISE_GROUP + local;
+    const bool inside = all(lessThan(texel, pc.outputSize));
+    if (inside) {
+        vec3 v = vec3(0.0);
+        for (uint k = 0u; k < 5u; ++k) v += kBinomial[k] * rows[2 * local.y + int(k)][local.x].xyz;
+        imageStore(level1, texel, roundToHalf(vec4(v, 1.0)));
+    }
+
+    if (sampled) {
+        const ivec2 block = 2 * texel;
+        if (inside && all(lessThan(block + 1, pc.inputSize))) {
+            const ivec2 t = 2 * local + 2;
+            vec3 a = tile[t.y][t.x].xyz;
+            vec3 b = tile[t.y][t.x + 1].xyz;
+            vec3 c = tile[t.y + 1][t.x].xyz;
+            vec3 d = tile[t.y + 1][t.x + 1].xyz;
+            vec3 hh = abs((a - b - c + d) * 0.5);
+            atomicAdd(localBins[histogramBin(hh.x)], 1u);
+            atomicAdd(localBins[DH_DENOISE_HIST_BINS + histogramBin(hh.y)], 1u);
+            atomicAdd(localBins[2 * DH_DENOISE_HIST_BINS + histogramBin(hh.z)], 1u);
+        }
+        barrier();
+        for (uint i = index; i < 3u * DH_DENOISE_HIST_BINS; i += threads) {
+            if (localBins[i] != 0u) atomicAdd(histogram.bins[i], localBins[i]);
+        }
+    }
+}

@@ -49,7 +49,17 @@ endif()
 # GLSL -> SPIR-V (build/shaders/*.spv; ignored by git)
 # ------------------------------------------------------------------------------
 set(DARKHOUSE_SHADER_SOURCES
-    shaders/exposure.comp)
+    shaders/exposure.comp
+    shaders/denoise_down0.comp
+    shaders/denoise_down.comp
+    shaders/denoise_sigma.comp
+    shaders/denoise_up.comp
+    shaders/denoise_final.comp)
+# Headers pulled in with #include; every shader is rebuilt when one changes.
+set(DARKHOUSE_SHADER_INCLUDES
+    shaders/denoise_common.glsl
+    shaders/denoise_config.h)
+list(TRANSFORM DARKHOUSE_SHADER_INCLUDES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE DARKHOUSE_SHADER_INCLUDE_PATHS)
 set(DARKHOUSE_SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")
 
 find_program(DARKHOUSE_GLSLC NAMES glslc HINTS "$ENV{VULKAN_SDK}/bin" "$ENV{VULKAN_SDK}/Bin")
@@ -67,22 +77,24 @@ foreach(shader_source IN LISTS DARKHOUSE_SHADER_SOURCES)
     set(shader_output "${DARKHOUSE_SHADER_OUTPUT_DIR}/${shader_name}.spv")
     if(DARKHOUSE_GLSLC)
         set(DARKHOUSE_GLSL_COMPILER "${DARKHOUSE_GLSLC}")
-        set(shader_command "${DARKHOUSE_GLSLC}" --target-env=vulkan1.3 -O -o "${shader_output}" "${shader_input}")
+        set(shader_command "${DARKHOUSE_GLSLC}" --target-env=vulkan1.3 -O
+            "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders" -o "${shader_output}" "${shader_input}")
     else()
         set(DARKHOUSE_GLSL_COMPILER "${DARKHOUSE_GLSLANG_VALIDATOR}")
-        set(shader_command "${DARKHOUSE_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -o "${shader_output}"
-            "${shader_input}")
+        set(shader_command "${DARKHOUSE_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3
+            "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders" -o "${shader_output}" "${shader_input}")
     endif()
     add_custom_command(
         OUTPUT "${shader_output}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${DARKHOUSE_SHADER_OUTPUT_DIR}"
         COMMAND ${shader_command}
-        DEPENDS "${shader_input}"
+        DEPENDS "${shader_input}" ${DARKHOUSE_SHADER_INCLUDE_PATHS}
         COMMENT "Compiling ${shader_source} -> SPIR-V"
         VERBATIM)
     list(APPEND DARKHOUSE_SPIRV_OUTPUTS "${shader_output}")
 endforeach()
-add_custom_target(darkhouse_shaders ALL DEPENDS ${DARKHOUSE_SPIRV_OUTPUTS} SOURCES ${DARKHOUSE_SHADER_SOURCES})
+add_custom_target(darkhouse_shaders ALL DEPENDS ${DARKHOUSE_SPIRV_OUTPUTS}
+    SOURCES ${DARKHOUSE_SHADER_SOURCES} ${DARKHOUSE_SHADER_INCLUDES})
 
 # ------------------------------------------------------------------------------
 # Embed schema/catalog.sql so the binary always carries its own schema
@@ -159,6 +171,7 @@ add_library(darkhouse_core STATIC
     src/layer_stack.cpp
     src/ai_segmentation.cpp
     src/denoise.cpp
+    src/denoise_node.cpp
     src/ui/library_model.cpp
     include/app_controller.hpp
     include/asset_manager.hpp
@@ -171,6 +184,7 @@ add_library(darkhouse_core STATIC
     include/layer_stack.hpp
     include/ai_segmentation.hpp
     include/denoise.hpp
+    include/denoise_node.hpp
     shaders/denoise_config.h
     include/ui/library_model.hpp
     schema/catalog.sql)
@@ -287,6 +301,15 @@ if(DARKHOUSE_BUILD_TESTS)
     darkhouse_apply_build_flags(darkhouse_denoise_test)
     add_test(NAME denoise_reference COMMAND darkhouse_denoise_test)
     set_tests_properties(denoise_reference PROPERTIES LABELS "denoise" TIMEOUT 120)
+
+    add_executable(darkhouse_denoise_gpu_test tests/denoise_gpu_test.cpp)
+    target_link_libraries(darkhouse_denoise_gpu_test PRIVATE darkhouse_core)
+    target_compile_definitions(darkhouse_denoise_gpu_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+    darkhouse_apply_build_flags(darkhouse_denoise_gpu_test)
+    add_test(NAME denoise_gpu COMMAND darkhouse_denoise_gpu_test)
+    set_tests_properties(denoise_gpu PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS "denoise;vulkan" TIMEOUT 300
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
 
     if(DARKHOUSE_GUI)
         add_executable(darkhouse_present_smoke tests/present_smoke.cpp)
