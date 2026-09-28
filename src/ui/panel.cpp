@@ -1,7 +1,5 @@
 #include "ui/panel.hpp"
 
-#include <algorithm>
-
 namespace darkhouse::ui {
 namespace {
 
@@ -37,18 +35,6 @@ const char* presentModeName(VkPresentModeKHR mode) {
 const PanelInfo& panelInfo(PanelId id) noexcept { return kPanels[index(id)]; }
 
 const std::array<PanelId, kPanelCount>& allPanels() noexcept { return kAllPanels; }
-
-void PlaceholderPanel::draw(PanelContext&) {
-    const ImVec2 available = ImGui::GetContentRegionAvail();
-    const char* text = info().description;
-    const float wrap = std::max(available.x - ImGui::GetStyle().ItemSpacing.x * 2.0f, 60.0f);
-    const ImVec2 size = ImGui::CalcTextSize(text, nullptr, false, wrap);
-    ImGui::SetCursorPos(ImGui::GetCursorPos() +
-                        ImVec2(std::max(0.0f, (available.x - size.x) * 0.5f), std::max(0.0f, (available.y - size.y) * 0.5f)));
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap);
-    ImGui::TextDisabled("%s", text);
-    ImGui::PopTextWrapPos();
-}
 
 void EnginePanel::draw(PanelContext& ctx) {
     const ImGuiIO& io = ImGui::GetIO();

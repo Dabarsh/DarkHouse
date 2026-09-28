@@ -8,11 +8,13 @@
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
 #pragma once
 
+#include "render_pipeline.hpp"
 #include "ui/panel.hpp"
 
 #include <glm/vec2.hpp>
 
 #include <array>
+#include <cstdint>
 
 namespace darkhouse::ui {
 
@@ -72,6 +74,47 @@ public:
     FilmstripPanel() noexcept : Panel(PanelId::FILMSTRIP) {}
     void draw(PanelContext& ctx) override;
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
+};
+
+// Unified layer stack: parametric, raster, vector, smart-object and group
+// layers of the open document, with add / delete / reorder and properties.
+class LayersPanel final : public Panel {
+public:
+    LayersPanel() noexcept : Panel(PanelId::LAYERS) {}
+    void draw(PanelContext& ctx) override;
+
+private:
+    void drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth);
+    void drawAddMenu(PanelContext& ctx);
+    void drawProperties(PanelContext& ctx, LayerNode& layer);
+    void addLayer(PanelContext& ctx, std::unique_ptr<LayerNode> layer);
+    [[nodiscard]] std::string nextName(const char* base);
+
+    LayerNode* selected_ = nullptr;  // validated against the document every frame
+    int nameCounter_ = 1;
+};
+
+// Develop adjustments. Tone drives the GPU develop graph (exposure node);
+// white balance, presence and HSL are UI previews until their nodes exist.
+class AdjustmentsPanel final : public Panel {
+public:
+    AdjustmentsPanel() noexcept : Panel(PanelId::ADJUSTMENTS) {}
+    void draw(PanelContext& ctx) override;
+
+private:
+    void drawTone(PanelContext& ctx);
+    void drawColor();
+    void drawHsl();
+
+    ExposureParams tone_{};
+    bool toneEditing_ = false;  // while a slider is held, the panel owns the values
+    float temperature_ = 5500.0f;
+    float tint_ = 0.0f;
+    float vibrance_ = 0.0f;
+    float saturation_ = 0.0f;
+    std::array<float, 8> hue_{};
+    std::array<float, 8> hslSaturation_{};
+    std::array<float, 8> luminance_{};
 };
 
 }  // namespace darkhouse::ui

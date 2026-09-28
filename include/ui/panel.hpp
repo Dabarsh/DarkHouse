@@ -78,14 +78,6 @@ private:
     PanelId id_;
 };
 
-// Stand-in body for panels whose implementation has not landed yet: shows the
-// panel's role so layouts can be evaluated with every dock populated.
-class PlaceholderPanel final : public Panel {
-public:
-    using Panel::Panel;
-    void draw(PanelContext& ctx) override;
-};
-
 // GPU, swapchain and frame-timing diagnostics.
 class EnginePanel final : public Panel {
 public:

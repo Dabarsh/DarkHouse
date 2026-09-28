@@ -216,7 +216,8 @@ SliderResult adjustmentSlider(const char* label, float& value, float min, float 
                               const char* format, ImU32 gradientLeft, ImU32 gradientRight) {
     SliderResult result;
     ImGui::PushID(label);
-    const float labelWidth = ImGui::GetFontSize() * 6.0f;
+    // Wide enough for the longest adjustment label, so columns line up.
+    const float labelWidth = ImGui::CalcTextSize("Temperature").x + ImGui::GetStyle().ItemSpacing.x * 2.0f;
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
     if (ImGui::IsItemHovered()) {

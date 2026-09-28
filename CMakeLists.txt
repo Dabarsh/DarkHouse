@@ -196,6 +196,7 @@ if(DARKHOUSE_GUI)
         src/ui/widgets.cpp
         src/ui/panels/left_dock.cpp
         src/ui/panels/center_dock.cpp
+        src/ui/panels/right_dock.cpp
         include/platform_window.hpp
         include/gui_engine.hpp
         include/ui/shell.hpp
