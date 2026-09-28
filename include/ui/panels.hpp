@@ -8,6 +8,7 @@
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
 #pragma once
 
+#include "denoise.hpp"
 #include "render_pipeline.hpp"
 #include "ui/panel.hpp"
 
@@ -110,11 +111,14 @@ public:
 
 private:
     void drawTone(PanelContext& ctx);
+    void drawNoiseReduction(PanelContext& ctx);
     void drawColor();
     void drawHsl();
 
     ExposureParams tone_{};
     bool toneEditing_ = false;  // while a slider is held, the panel owns the values
+    DenoiseParams noise_{};     // kept while noise reduction is off, so re-enabling restores it
+    bool noiseEditing_ = false;
     float temperature_ = 5500.0f;
     float tint_ = 0.0f;
     float vibrance_ = 0.0f;

@@ -213,19 +213,20 @@ void DarkHouseApp::disableGpu() noexcept {
 }
 
 void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editStack) {
+    // A develop stack is a linear chain: canvas -> node 0 -> node 1 -> ...
+    // -> display transform. An empty stack still gets an identity exposure
+    // node. Node ids equal stack indices; the display node comes last.
+    std::vector<EditNodeRecord> stack = editStack;
+    if (stack.empty()) stack.push_back({0, std::string(ExposureNode::kTypeName), ExposureNode::pack(ExposureParams{})});
+    for (std::size_t i = 0; i < stack.size(); ++i) stack[i].nodeIndex = static_cast<std::int32_t>(i);
+    developStack_ = stack;
+
     if (!gpu_ || !developGraph_) return;
     // Clearing destroys the nodes' output images, which UI frames still in
     // flight may be sampling.
     gpu_->waitIdle();
     developGraph_->clear();
     ++canvasGeneration_;
-
-    // A develop stack is a linear chain: canvas -> node 0 -> node 1 -> ...
-    // -> display transform. An empty stack still gets an identity exposure
-    // node. Node ids equal stack indices; the display node comes last.
-    std::vector<EditNodeRecord> stack = editStack;
-    if (stack.empty()) stack.push_back({0, std::string(ExposureNode::kTypeName), ExposureNode::pack(ExposureParams{})});
-    developStack_ = stack;
 
     std::optional<RenderPipelineGraph::NodeId> previous;
     for (const EditNodeRecord& record : stack) {
@@ -392,6 +393,32 @@ void DarkHouseApp::handle(const SetDevelopParamsEvent& event) {
     } catch (const std::exception& e) {
         logLine("error", "develop parameters rejected for node ", event.nodeIndex, " (", record.nodeType, "): ", e.what());
     }
+}
+
+void DarkHouseApp::handle(const SetDevelopStackEvent& event) {
+    const std::vector<EditNodeRecord> previous = developStack_;
+    try {
+        rebuildDevelopGraph(event.stack);
+    } catch (const std::exception& e) {
+        logLine("error", "develop stack rejected: ", e.what());
+        try {
+            rebuildDevelopGraph(previous);
+        } catch (const std::exception& again) {
+            logLine("error", "canvas rendering disabled: ", again.what());
+            disableCanvas();
+        }
+        return;
+    }
+    try {
+        if (event.persist && !activeAssetId_.empty()) assets_->saveEditStack(activeAssetId_, developStack_);
+    } catch (const std::exception& e) {
+        logLine("error", "develop stack not saved for ", activeAssetId_, ": ", e.what());
+    }
+}
+
+const ComputeNode* DarkHouseApp::developNode(std::size_t index) const {
+    if (!developGraph_ || index >= developStack_.size() || index >= developGraph_->nodeCount()) return nullptr;
+    return &developGraph_->node(static_cast<RenderPipelineGraph::NodeId>(index));
 }
 
 void DarkHouseApp::handle(const OpenAssetEvent& event) {

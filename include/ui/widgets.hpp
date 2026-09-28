@@ -35,7 +35,8 @@ struct SliderResult {
 // Slider with an optional horizontal gradient behind it (hue, temperature,
 // tint...). Double-click resets to `defaultValue`, like most raw developers.
 SliderResult adjustmentSlider(const char* label, float& value, float min, float max, float defaultValue,
-                              const char* format, ImU32 gradientLeft = 0, ImU32 gradientRight = 0);
+                              const char* format, ImU32 gradientLeft = 0, ImU32 gradientRight = 0,
+                              ImGuiSliderFlags flags = ImGuiSliderFlags_None);
 
 // --- Formatting -----------------------------------------------------------------
 [[nodiscard]] std::string formatDateTime(std::int64_t unixSeconds);  // "2024-06-01 14:03" (UTC)

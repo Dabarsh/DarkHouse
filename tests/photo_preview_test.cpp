@@ -4,8 +4,10 @@
 //
 //   1. an opaque 8-bit PNG appears on the canvas, sRGB round trip within 1 LSB
 //   2. a +1 EV exposure edit is applied live to that photo
-//   3. opening a smaller photo with alpha resizes the canvas and keeps alpha
-//   4. a photo whose file is gone reports FAILED and clears the canvas
+//   3. enabling noise reduction (SetDevelopStackEvent) inserts the denoise
+//      node first, measures noise, changes the image and is saved
+//   4. opening a smaller photo with alpha resizes the canvas and keeps alpha
+//   5. a photo whose file is gone reports FAILED and clears the canvas
 //
 // Runs with Vulkan validation (sync validation via CTest's environment).
 // Exit codes: 0 pass, 1 fail, 77 skipped (no Vulkan 1.3 device).
@@ -13,6 +15,7 @@
 // Usage: darkhouse_photo_preview_test <work directory>
 
 #include "app_controller.hpp"
+#include "denoise_node.hpp"
 
 #include <stb_image_write.h>
 
@@ -47,14 +50,26 @@ struct Image {
     std::vector<std::uint8_t> rgba;
 };
 
+// Gradients with sensor-like noise (so the denoiser has something to find),
+// optionally with an alpha ramp.
 Image makePhoto(std::uint32_t width, std::uint32_t height, bool withAlpha) {
     Image image{width, height, std::vector<std::uint8_t>(std::size_t{width} * height * 4)};
+    std::uint32_t state = 12345;
+    auto noise = [&] {  // roughly Gaussian, sigma ~ 9 LSB
+        int sum = 0;
+        for (int i = 0; i < 4; ++i) {
+            state = state * 1664525u + 1013904223u;
+            sum += static_cast<int>(state >> 27);  // 0..31
+        }
+        return sum - 62;
+    };
+    auto channel = [&](int value) { return static_cast<std::uint8_t>(std::clamp(value + noise(), 0, 255)); };
     for (std::uint32_t y = 0; y < height; ++y) {
         for (std::uint32_t x = 0; x < width; ++x) {
             std::uint8_t* p = &image.rgba[(std::size_t{y} * width + x) * 4];
-            p[0] = static_cast<std::uint8_t>(x * 255 / (width - 1));
-            p[1] = static_cast<std::uint8_t>(y * 255 / (height - 1));
-            p[2] = static_cast<std::uint8_t>((x * 7 + y * 13) % 256);
+            p[0] = channel(static_cast<int>(x * 255 / (width - 1)));
+            p[1] = channel(static_cast<int>(y * 255 / (height - 1)));
+            p[2] = channel(128);
             p[3] = withAlpha ? static_cast<std::uint8_t>(255 - (x * 255 / (width - 1))) : 255;
         }
     }
@@ -108,20 +123,32 @@ public:
             break;
         case 1:  // the next frame renders the edit
             if (capture(frame, exposed)) {
-                app.postEvent(OpenAssetEvent{transparent_});
+                std::vector<EditNodeRecord> stack = app.developStack();
+                stack.insert(stack.begin(), EditNodeRecord{7, std::string(DenoiseNode::kTypeName),
+                                                           DenoiseNode::pack(DenoiseParams{})});
+                app.postEvent(SetDevelopStackEvent{std::move(stack), true});
                 step_ = 2;
             }
             break;
         case 2:
-            if (photo.state == PhotoStatus::State::READY && photo.assetId == transparent_ && capture(frame, withAlpha)) {
-                app.postEvent(OpenAssetEvent{missing_});
+            if (capture(frame, denoised)) {
+                for (const EditNodeRecord& record : app.developStack()) stackAfterDenoise.push_back(record.nodeType);
+                if (const auto* node = dynamic_cast<const DenoiseNode*>(app.developNode(0))) stats = node->statistics();
+                saved = app.assets().loadEditStack(photo_);
+                app.postEvent(OpenAssetEvent{transparent_});
                 step_ = 3;
             }
             break;
         case 3:
+            if (photo.state == PhotoStatus::State::READY && photo.assetId == transparent_ && capture(frame, withAlpha)) {
+                app.postEvent(OpenAssetEvent{missing_});
+                step_ = 4;
+            }
+            break;
+        case 4:
             if (photo.state == PhotoStatus::State::FAILED && capture(frame, failed)) {
                 failedError = photo.error;
-                step_ = 4;
+                step_ = 5;
             }
             break;
         default: break;
@@ -130,7 +157,10 @@ public:
 
     [[nodiscard]] int step() const noexcept { return step_; }
 
-    Image baseline, exposed, withAlpha, failed;
+    Image baseline, exposed, denoised, withAlpha, failed;
+    std::vector<std::string> stackAfterDenoise;
+    DenoiseStatistics stats;
+    std::vector<EditNodeRecord> saved;
     std::string failedError;
     std::uint32_t validationErrors = 0;
 
@@ -205,7 +235,7 @@ int main(int argc, char** argv) {
     app.postEvent(OpenAssetEvent{opaqueId});
     app.run();
 
-    CHECK(frontEnd.step() == 4);
+    CHECK(frontEnd.step() == 5);
 
     // 1. The photo, displayed through linear FP16 and back to sRGB.
     CHECK(frontEnd.baseline.width == 300 && frontEnd.baseline.height == 200);
@@ -229,7 +259,38 @@ int main(int argc, char** argv) {
         CHECK(mean < 0.6);
     }
 
-    // 3. Smaller photo with alpha: the canvas follows its size, alpha survives.
+    // 3. Noise reduction: first in the stack, measuring, visible, saved in order.
+    CHECK((frontEnd.stackAfterDenoise == std::vector<std::string>{"denoise", "exposure"}));
+    CHECK(frontEnd.stats.levels == denoiseLevelCount(300, 200));
+    CHECK(frontEnd.stats.sigma[0] > 0.0f && frontEnd.stats.sigma[1] > 0.0f);
+    CHECK(frontEnd.saved.size() == 2 && frontEnd.saved[0].nodeType == "denoise" && frontEnd.saved[0].nodeIndex == 0 &&
+          frontEnd.saved[1].nodeType == "exposure" && frontEnd.saved[1].nodeIndex == 1);
+    std::printf("denoise: sigma %.4f %.4f %.4f, %u levels\n", frontEnd.stats.sigma[0], frontEnd.stats.sigma[1],
+                frontEnd.stats.sigma[2], frontEnd.stats.levels);
+    if (frontEnd.denoised.rgba.size() == frontEnd.exposed.rgba.size()) {
+        // Blue is flat grey plus noise: the denoiser must visibly smooth it.
+        std::size_t changed = 0;
+        for (std::size_t i = 2; i < frontEnd.denoised.rgba.size(); i += 4) {
+            changed += std::abs(frontEnd.denoised.rgba[i] - frontEnd.exposed.rgba[i]) > 2 ? 1 : 0;
+        }
+        auto blueDeviation = [](const Image& image) {
+            double sum = 0.0, squares = 0.0;
+            const double n = static_cast<double>(image.rgba.size() / 4);
+            for (std::size_t i = 2; i < image.rgba.size(); i += 4) {
+                sum += image.rgba[i];
+                squares += static_cast<double>(image.rgba[i]) * image.rgba[i];
+            }
+            return std::sqrt(std::max(0.0, squares / n - (sum / n) * (sum / n)));
+        };
+        const double before = blueDeviation(frontEnd.exposed);
+        const double after = blueDeviation(frontEnd.denoised);
+        std::printf("denoise: %zu of %zu blue values changed by > 2 LSB; blue deviation %.2f -> %.2f LSB\n", changed,
+                    frontEnd.denoised.rgba.size() / 4, before, after);
+        CHECK(changed > frontEnd.denoised.rgba.size() / 40);
+        CHECK(after < before * 0.5);
+    }
+
+    // 4. Smaller photo with alpha: the canvas follows its size, alpha survives.
     CHECK(frontEnd.withAlpha.width == 64 && frontEnd.withAlpha.height == 96);
     if (frontEnd.withAlpha.rgba.size() == translucent.rgba.size()) {
         const auto [worst, mean] = compare(frontEnd.withAlpha, translucent,
@@ -241,7 +302,7 @@ int main(int argc, char** argv) {
         CHECK(worst <= 1);
     }
 
-    // 4. Missing file: FAILED, and the previous photo is not left on screen.
+    // 5. Missing file: FAILED, and the previous photo is not left on screen.
     CHECK(app.photo().state == PhotoStatus::State::FAILED);
     CHECK(frontEnd.failedError.find("cannot read") != std::string::npos);
     bool cleared = !frontEnd.failed.rgba.empty();

@@ -213,7 +213,7 @@ bool colorLabelPicker(const char* id, int& label, bool allowAny) {
 }
 
 SliderResult adjustmentSlider(const char* label, float& value, float min, float max, float defaultValue,
-                              const char* format, ImU32 gradientLeft, ImU32 gradientRight) {
+                              const char* format, ImU32 gradientLeft, ImU32 gradientRight, ImGuiSliderFlags flags) {
     SliderResult result;
     ImGui::PushID(label);
     // Wide enough for the longest adjustment label, so columns line up.
@@ -245,7 +245,7 @@ SliderResult adjustmentSlider(const char* label, float& value, float min, float 
         ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(1.0f, 1.0f, 1.0f, 0.08f));
     }
     ImGui::SetNextItemWidth(-FLT_MIN);
-    result.changed |= ImGui::SliderFloat("##value", &value, min, max, format);
+    result.changed |= ImGui::SliderFloat("##value", &value, min, max, format, flags);
     result.released |= ImGui::IsItemDeactivatedAfterEdit();
     if (gradient) ImGui::PopStyleColor(3);
     ImGui::PopID();

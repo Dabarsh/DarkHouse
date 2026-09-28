@@ -1,6 +1,8 @@
 // Right dock: unified layer stack and develop adjustments.
 
 #include "ui/panels.hpp"
+
+#include "denoise_node.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -439,13 +441,15 @@ void AdjustmentsPanel::draw(PanelContext& ctx) {
     ImGui::Spacing();
 
     if (ImGui::CollapsingHeader("Tone", ImGuiTreeNodeFlags_DefaultOpen)) drawTone(ctx);
+    if (ImGui::CollapsingHeader("Noise Reduction", ImGuiTreeNodeFlags_DefaultOpen)) drawNoiseReduction(ctx);
     if (ImGui::CollapsingHeader("White Balance & Presence", ImGuiTreeNodeFlags_DefaultOpen)) drawColor();
     if (ImGui::CollapsingHeader("HSL / Color", ImGuiTreeNodeFlags_DefaultOpen)) drawHsl();
 
     ImGui::Spacing();
     ImGui::PushTextWrapPos();
-    ImGui::TextDisabled("Tone runs live on the GPU develop graph and is saved with the photo. White balance, "
-                        "presence and HSL are interface previews; their GPU nodes are not implemented yet.");
+    ImGui::TextDisabled("Tone and noise reduction run live on the GPU develop graph and are saved with the photo. "
+                        "White balance, presence and HSL are interface previews; their GPU nodes are not "
+                        "implemented yet.");
     ImGui::PopTextWrapPos();
 }
 
@@ -492,6 +496,90 @@ void AdjustmentsPanel::drawTone(PanelContext& ctx) {
     if (changed || released) {
         // Live while dragging; written to the catalog when the drag ends.
         ctx.app.postEvent(SetDevelopParamsEvent{*node, ExposureNode::pack(tone_), released});
+    }
+}
+
+void AdjustmentsPanel::drawNoiseReduction(PanelContext& ctx) {
+    const std::vector<EditNodeRecord>& stack = ctx.app.developStack();
+    std::optional<std::uint32_t> node;
+    for (std::size_t i = 0; i < stack.size(); ++i) {
+        if (stack[i].nodeType == DenoiseNode::kTypeName && stack[i].serializedParams.size() == sizeof(DenoiseParams)) {
+            node = static_cast<std::uint32_t>(i);
+            if (!noiseEditing_) std::memcpy(&noise_, stack[i].serializedParams.data(), sizeof noise_);
+            break;
+        }
+    }
+
+    bool enabled = node.has_value();
+    if (ImGui::Checkbox("Enable##Denoise", &enabled)) {
+        std::vector<EditNodeRecord> next = stack;
+        if (enabled) {
+            // First in the stack: the noise model assumes scene-linear light, before any tone change.
+            next.insert(next.begin(), EditNodeRecord{0, std::string(DenoiseNode::kTypeName), DenoiseNode::pack(noise_)});
+        } else {
+            next.erase(next.begin() + *node);
+        }
+        ctx.app.postEvent(SetDevelopStackEvent{std::move(next), true});
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", node ? "multiscale, GPU" : "off");
+    if (!node) return;
+
+    const auto* denoise = dynamic_cast<const DenoiseNode*>(ctx.app.developNode(*node));
+    const DenoiseStatistics stats = denoise ? denoise->statistics() : DenoiseStatistics{};
+
+    float luminance = noise_.luminance * 100.0f;
+    float colour = noise_.chrominance * 100.0f;
+    float detail = noise_.detail * 100.0f;
+    SliderResult results[4];
+    results[0] = adjustmentSlider("Luminance", luminance, 0.0f, 100.0f, 50.0f, "%.0f");
+    results[1] = adjustmentSlider("Color", colour, 0.0f, 100.0f, 50.0f, "%.0f");
+    results[2] = adjustmentSlider("Detail", detail, 0.0f, 100.0f, 20.0f, "%.0f");
+    noise_.luminance = luminance / 100.0f;
+    noise_.chrominance = colour / 100.0f;
+    noise_.detail = detail / 100.0f;
+
+    // Noise level: measured from the image on every render, or set by hand
+    // (sigma after the square-root variance stabilisation, see denoise.hpp).
+    constexpr float kMinLevel = 0.001f;
+    constexpr float kMaxLevel = 0.25f;
+    bool automatic = noise_.noiseLevel <= 0.0f;
+    if (ImGui::Checkbox("Auto noise level", &automatic)) {
+        // Manual starts from the current estimate, so the image does not jump.
+        const float measured = stats.sigma[0] > 0.0f ? stats.sigma[0] : 0.02f;
+        noise_.noiseLevel = automatic ? 0.0f : std::clamp(measured, kMinLevel, kMaxLevel);
+        results[3].changed = results[3].released = true;
+    }
+    if (automatic) {
+        if (stats.sigma[0] > 0.0f) {
+            ImGui::TextDisabled("Measured  luma %.4f  color %.4f / %.4f", stats.sigma[0], stats.sigma[1], stats.sigma[2]);
+            ImGui::SetItemTooltip("Noise sigma per opponent channel, estimated from the finest wavelet band\n"
+                                  "(median absolute deviation) in the square-root domain.");
+        }
+    } else {
+        const SliderResult level = adjustmentSlider("Noise level", noise_.noiseLevel, kMinLevel, kMaxLevel, 0.02f,
+                                                    "%.4f", 0, 0, ImGuiSliderFlags_Logarithmic);
+        results[3].changed |= level.changed;
+        results[3].released |= level.released;
+    }
+    if (stats.levels > 0) {
+        ImGui::TextDisabled("%u detail band%s on %u x %u", stats.levels, stats.levels == 1 ? "" : "s",
+                            ctx.app.canvasWidth(), ctx.app.canvasHeight());
+    }
+
+    bool changed = false;
+    bool released = false;
+    for (const SliderResult& result : results) {
+        changed |= result.changed;
+        released |= result.released;
+    }
+    noiseEditing_ = ImGui::IsAnyItemActive() && (changed || noiseEditing_) && !released;
+    if (ImGui::SmallButton("Reset Noise Reduction")) {
+        noise_ = DenoiseParams{};
+        changed = released = true;
+    }
+    if (changed || released) {
+        ctx.app.postEvent(SetDevelopParamsEvent{*node, DenoiseNode::pack(noise_), released});
     }
 }
 

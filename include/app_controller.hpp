@@ -101,8 +101,16 @@ struct SetDevelopParamsEvent {
     std::vector<std::byte> serializedParams;
     bool persist = false;
 };
+// Replaces the whole develop stack, e.g. to add or remove a node, rebuilds
+// the develop graph and re-renders. Nodes are renumbered in order. With
+// `persist`, the stack is saved to the open asset's catalog entry. A stack
+// that cannot be built is rejected and the previous one kept.
+struct SetDevelopStackEvent {
+    std::vector<EditNodeRecord> stack;
+    bool persist = true;
+};
 using AppEvent = std::variant<QuitEvent, SwitchModeEvent, ImportFilesEvent, SetRatingEvent, SetFlagEvent,
-                              SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent>;
+                              SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent, SetDevelopStackEvent>;
 
 struct FrameContext {
     std::uint64_t frameIndex = 0;
@@ -212,6 +220,9 @@ public:
     // The develop stack currently on the canvas (an identity exposure node when
     // no asset is open or its stack is empty).
     [[nodiscard]] const std::vector<EditNodeRecord>& developStack() const noexcept { return developStack_; }
+    // The GPU node running develop-stack entry `index`, for read-outs such as
+    // DenoiseNode::statistics(); nullptr without a develop graph.
+    [[nodiscard]] const ComputeNode* developNode(std::size_t index) const;
     // Increments whenever the catalog may have changed (import finished,
     // rating, flag or label written), so views know when to re-query.
     [[nodiscard]] std::uint64_t catalogRevision() const noexcept { return catalogRevision_; }
@@ -243,6 +254,7 @@ private:
     void handle(const SetColorLabelEvent& event);
     void handle(const OpenAssetEvent& event);
     void handle(const SetDevelopParamsEvent& event);
+    void handle(const SetDevelopStackEvent& event);
     void pollImports();
     void startPhotoLoad(const AssetRecord& asset);
     void pollPhotoLoad();
