@@ -206,6 +206,7 @@ if(DARKHOUSE_GUI)
         include/ui/widgets.hpp
         include/ui/panels.hpp)
     target_link_libraries(darkhouse_gui PUBLIC darkhouse_core DarkHouse::imgui glfw glm::glm)
+    target_include_directories(darkhouse_gui PRIVATE "${CMAKE_BINARY_DIR}/generated")  # darkhouse_ui_font.hpp
     target_compile_definitions(darkhouse_gui PUBLIC DARKHOUSE_WITH_GUI=1)
     darkhouse_apply_build_flags(darkhouse_gui)
 endif()

@@ -36,7 +36,10 @@ class GuiEngine;
 class GuiLayer {
 public:
     virtual ~GuiLayer() = default;
-    // ImGui context and renderer exist; load fonts, styles, textures here.
+    // Called once the ImGui context exists, before DPI scaling is applied:
+    // set colours, unscaled sizes and fonts here.
+    virtual void configureStyle(ImGuiStyle& /*style*/, ImGuiIO& /*io*/) {}
+    // ImGui context and renderer exist; create textures here.
     virtual void onAttach(GuiEngine& /*gui*/) {}
     // Renderer is about to shut down; release any ImTextureID created through the engine.
     virtual void onDetach(GuiEngine& /*gui*/) {}

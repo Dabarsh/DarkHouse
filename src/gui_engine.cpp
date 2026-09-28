@@ -79,6 +79,7 @@ void GuiEngine::initImGui() {
 
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
+    layer_->configureStyle(style, io);
     const float scale = window_->contentScale();
     style.ScaleAllSizes(scale);
     style.FontScaleDpi = scale;

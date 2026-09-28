@@ -25,4 +25,12 @@ inline constexpr ImVec4 kLayerGroup{0.60f, 0.60f, 0.62f, 1.0f};
 [[nodiscard]] ImVec4 colorLabelColor(ColorLabel label) noexcept;
 [[nodiscard]] const char* colorLabelName(ColorLabel label) noexcept;
 
+// The DarkHouse look: neutral greys, so the chrome never tints how a photo
+// is judged, with the safelight accent reserved for focus and selection.
+// Sizes are unscaled; GuiEngine applies the display scale afterwards.
+void applyStyle(ImGuiStyle& style);
+
+// Registers the embedded UI font (Roboto Medium) as the default font.
+void loadFonts(ImGuiIO& io, ImGuiStyle& style);
+
 }  // namespace darkhouse::ui::theme

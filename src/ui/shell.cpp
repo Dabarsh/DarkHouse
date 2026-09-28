@@ -75,6 +75,11 @@ DarkHouseShell::DarkHouseShell() {
 // still running at exit finishes before the shell goes away.
 DarkHouseShell::~DarkHouseShell() = default;
 
+void DarkHouseShell::configureStyle(ImGuiStyle& style, ImGuiIO& io) {
+    theme::applyStyle(style);
+    theme::loadFonts(io, style);
+}
+
 void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngine& gui) {
     std::vector<std::string> dropped = gui.window().takeDroppedPaths();
     if (!dropped.empty()) startImportScan(std::move(dropped));

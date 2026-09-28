@@ -30,6 +30,7 @@ public:
     DarkHouseShell();
     ~DarkHouseShell() override;
 
+    void configureStyle(ImGuiStyle& style, ImGuiIO& io) override;
     void draw(DarkHouseApp& app, const FrameContext& frame, GuiEngine& gui) override;
 
 private:
