@@ -147,7 +147,12 @@ void SearchPanel::draw(PanelContext& ctx) {
     if (ImGui::InputTextWithHint("##SearchText", "Search file name, camera, lens", text_.data(), text_.size())) {
         filter.text = text_.data();
     }
-    ImGui::Spacing();
+    // Result count first, so it stays visible when the panel is short.
+    ImGui::TextDisabled("Showing %zu of %zu", library.visible().size(), library.totalCount());
+    if (filter.active()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear filters")) filter = SearchFilter{};
+    }
 
     if (ImGui::BeginTable("##SearchFilters", 2, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 4.0f);
@@ -187,13 +192,6 @@ void SearchPanel::draw(PanelContext& ctx) {
         int sort = static_cast<int>(library.sortOrder());
         if (ImGui::Combo("##Sort", &sort, kSorts, IM_ARRAYSIZE(kSorts))) library.setSortOrder(static_cast<SortOrder>(sort));
         ImGui::EndTable();
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Showing %zu of %zu", library.visible().size(), library.totalCount());
-    if (filter.active()) {
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Clear filters")) filter = SearchFilter{};
     }
 }
 

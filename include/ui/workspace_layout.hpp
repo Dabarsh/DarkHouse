@@ -33,7 +33,7 @@ class WorkspaceLayoutManager {
 public:
     // Bump when a default layout changes, so saved layouts from older builds
     // are replaced instead of mixing old node trees with new panels.
-    static constexpr int kLayoutVersion = 3;
+    static constexpr int kLayoutVersion = 4;
 
     WorkspaceLayoutManager();
 
