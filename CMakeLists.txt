@@ -17,6 +17,15 @@ endif()
 set(DARKHOUSE_ONNXRUNTIME "AUTO" CACHE STRING "ONNX Runtime AI segmentation backend: AUTO, ON or OFF")
 set_property(CACHE DARKHOUSE_ONNXRUNTIME PROPERTY STRINGS AUTO ON OFF)
 option(DARKHOUSE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DARKHOUSE_GUI "Build the Dear ImGui desktop front-end (GLFW window + Vulkan swapchain)" ON)
+# Whether Vulkan validation layers are on when neither --validation nor
+# --no-validation is passed. AUTO enables them for Debug and RelWithDebInfo
+# builds; it is resolved per configuration, so multi-config generators
+# (Visual Studio, Xcode, Ninja Multi-Config) get the right default for each.
+set(DARKHOUSE_VULKAN_VALIDATION "AUTO" CACHE STRING "Default Vulkan validation layers: AUTO, ON or OFF")
+set_property(CACHE DARKHOUSE_VULKAN_VALIDATION PROPERTY STRINGS AUTO ON OFF)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # ------------------------------------------------------------------------------
 # Dependencies
@@ -30,6 +39,11 @@ else()
     set(DARKHOUSE_SQLITE_TARGET SQLite::SQLite3)
 endif()
 find_package(Threads REQUIRED)
+
+# GLFW, GLM and Dear ImGui (docking) for the desktop front-end.
+if(DARKHOUSE_GUI)
+    include(DarkHouseDependencies)
+endif()
 
 # ------------------------------------------------------------------------------
 # GLSL -> SPIR-V (build/shaders/*.spv; ignored by git)
@@ -122,14 +136,32 @@ target_compile_definitions(DarkHouse PRIVATE
 set_target_properties(DarkHouse PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+if(DARKHOUSE_GUI)
+    target_link_libraries(DarkHouse PRIVATE DarkHouse::imgui glfw glm::glm)
+    target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_WITH_GUI=1)
+endif()
+
+# Vulkan validation default (see DARKHOUSE_VULKAN_VALIDATION above).
+if(DARKHOUSE_VULKAN_VALIDATION STREQUAL "AUTO")
+    set(DARKHOUSE_VALIDATION_DEFAULT "$<IF:$<CONFIG:Debug,RelWithDebInfo>,1,0>")
+elseif(DARKHOUSE_VULKAN_VALIDATION)
+    set(DARKHOUSE_VALIDATION_DEFAULT 1)
+else()
+    set(DARKHOUSE_VALIDATION_DEFAULT 0)
+endif()
+target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_VALIDATION_DEFAULT=${DARKHOUSE_VALIDATION_DEFAULT})
+
+# Compiler flags shared by every platform: strict warnings, UTF-8 sources, and
+# standard-library assertions in Debug builds.
 if(MSVC)
-    target_compile_options(DarkHouse PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(DarkHouse PRIVATE /W4 /permissive- /utf-8 /Zc:__cplusplus /MP)
     target_compile_definitions(DarkHouse PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     if(DARKHOUSE_WARNINGS_AS_ERRORS)
         target_compile_options(DarkHouse PRIVATE /WX)
     endif()
 else()
     target_compile_options(DarkHouse PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
+    target_compile_definitions(DarkHouse PRIVATE $<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS>)
     if(DARKHOUSE_WARNINGS_AS_ERRORS)
         target_compile_options(DarkHouse PRIVATE -Werror)
     endif()
@@ -163,3 +195,9 @@ message(STATUS "  Vulkan:        ${Vulkan_LIBRARY}")
 message(STATUS "  SQLite:        ${SQLite3_VERSION}")
 message(STATUS "  GLSL compiler: ${DARKHOUSE_GLSL_COMPILER}")
 message(STATUS "  ONNX Runtime:  ${DARKHOUSE_HAVE_ONNXRUNTIME}")
+if(DARKHOUSE_GUI)
+    message(STATUS "  GUI:           ON (GLFW ${DARKHOUSE_GLFW_TAG}, Dear ImGui ${DARKHOUSE_IMGUI_TAG}, GLM ${DARKHOUSE_GLM_TAG})")
+else()
+    message(STATUS "  GUI:           OFF (headless/CLI only)")
+endif()
+message(STATUS "  Validation:    ${DARKHOUSE_VULKAN_VALIDATION} by default")

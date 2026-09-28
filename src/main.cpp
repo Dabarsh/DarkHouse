@@ -23,6 +23,9 @@
 #ifndef DARKHOUSE_VERSION
 #define DARKHOUSE_VERSION "dev"
 #endif
+#ifndef DARKHOUSE_VALIDATION_DEFAULT
+#define DARKHOUSE_VALIDATION_DEFAULT 0
+#endif
 
 namespace fs = std::filesystem;
 using namespace darkhouse;
@@ -53,7 +56,9 @@ void printUsage(std::ostream& out) {
            "  --models <dir>          directory containing *_segmentation.onnx models\n"
            "  --frames <n>            run exactly n frames instead of exiting when idle\n"
            "  --no-gpu                skip Vulkan initialization\n"
-           "  --validation            enable Vulkan validation layers\n"
+           "  --validation            enable Vulkan validation layers (default in Debug builds;\n"
+           "                          env DARKHOUSE_VULKAN_VALIDATION=0/1 overrides the build default)\n"
+           "  --no-validation         disable Vulkan validation layers\n"
            "  --version, --help\n";
 }
 
@@ -141,6 +146,10 @@ struct CommandLine {
 
 std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
     CommandLine cli;
+    cli.config.enableValidationLayers = DARKHOUSE_VALIDATION_DEFAULT != 0;
+    if (const char* validation = std::getenv("DARKHOUSE_VULKAN_VALIDATION"); validation && *validation) {
+        cli.config.enableValidationLayers = std::string_view(validation) != "0";
+    }
     if (const char* shaders = std::getenv("DARKHOUSE_SHADER_DIR")) {
         cli.config.shaderDirectory = shaders;
     }
@@ -221,6 +230,8 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
             cli.config.enableGpu = false;
         } else if (arg == "--validation") {
             cli.config.enableValidationLayers = true;
+        } else if (arg == "--no-validation") {
+            cli.config.enableValidationLayers = false;
         } else {
             return fail("unknown option '" + std::string(arg) + "'");
         }
