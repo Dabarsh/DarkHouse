@@ -209,6 +209,7 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
     // has a developed output.
     std::vector<EditNodeRecord> stack = editStack;
     if (stack.empty()) stack.push_back({0, std::string(ExposureNode::kTypeName), ExposureNode::pack(ExposureParams{})});
+    developStack_ = stack;
 
     std::optional<RenderPipelineGraph::NodeId> previous;
     for (const EditNodeRecord& record : stack) {
@@ -325,8 +326,51 @@ void DarkHouseApp::handle(const SetRatingEvent& event) {
         if (!assets_->updateAssetRating(event.assetId, event.rating)) {
             logLine("warn", "rating ignored, no asset with id ", event.assetId);
         }
+        ++catalogRevision_;
     } catch (const std::exception& e) {
         logLine("error", "rating failed for ", event.assetId, ": ", e.what());
+    }
+}
+
+void DarkHouseApp::handle(const SetFlagEvent& event) {
+    try {
+        if (!assets_->updateAssetFlag(event.assetId, event.flag)) {
+            logLine("warn", "flag ignored, no asset with id ", event.assetId);
+        }
+        ++catalogRevision_;
+    } catch (const std::exception& e) {
+        logLine("error", "flag failed for ", event.assetId, ": ", e.what());
+    }
+}
+
+void DarkHouseApp::handle(const SetColorLabelEvent& event) {
+    try {
+        if (!assets_->updateAssetColorLabel(event.assetId, event.label)) {
+            logLine("warn", "colour label ignored, no asset with id ", event.assetId);
+        }
+        ++catalogRevision_;
+    } catch (const std::exception& e) {
+        logLine("error", "colour label failed for ", event.assetId, ": ", e.what());
+    }
+}
+
+void DarkHouseApp::handle(const SetDevelopParamsEvent& event) {
+    if (event.nodeIndex >= developStack_.size()) {
+        logLine("warn", "develop parameters ignored, no node ", event.nodeIndex);
+        return;
+    }
+    EditNodeRecord& record = developStack_[event.nodeIndex];
+    try {
+        // The develop graph is a linear chain built in stack order, so node
+        // ids equal stack indices (see rebuildDevelopGraph).
+        if (developGraph_ && event.nodeIndex < developGraph_->nodeCount()) {
+            developGraph_->node(event.nodeIndex).updateUniforms(event.serializedParams);
+            graphDirty_ = true;
+        }
+        record.serializedParams = event.serializedParams;
+        if (event.persist && !activeAssetId_.empty()) assets_->saveEditStack(activeAssetId_, developStack_);
+    } catch (const std::exception& e) {
+        logLine("error", "develop parameters rejected for node ", event.nodeIndex, " (", record.nodeType, "): ", e.what());
     }
 }
 
@@ -355,6 +399,7 @@ void DarkHouseApp::pollImports() {
         try {
             const AssetRecord record = it->second.get();
             ++summary_.importsSucceeded;
+            ++catalogRevision_;
             std::ostringstream detail;
             if (record.width > 0) detail << ' ' << record.width << 'x' << record.height;
             if (record.metadata.cameraModel) detail << ", " << *record.metadata.cameraModel;

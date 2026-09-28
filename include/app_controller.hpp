@@ -70,10 +70,28 @@ struct SetRatingEvent {
     std::string assetId;
     int rating = 0;
 };
+struct SetFlagEvent {
+    std::string assetId;
+    AssetFlag flag = AssetFlag::UNFLAGGED;
+};
+struct SetColorLabelEvent {
+    std::string assetId;
+    ColorLabel label = ColorLabel::NONE;
+};
 struct OpenAssetEvent {
     std::string assetId;  // loads its develop stack; leaves CATALOG for CANVAS
 };
-using AppEvent = std::variant<QuitEvent, SwitchModeEvent, ImportFilesEvent, SetRatingEvent, OpenAssetEvent>;
+// Replaces the parameters of one develop-stack node (same bytes as
+// edit_nodes.serialized_params) and re-renders the canvas. With `persist`,
+// the stack is also saved to the open asset's catalog entry; UIs send
+// persist=false while a slider is dragged and true when it is released.
+struct SetDevelopParamsEvent {
+    std::uint32_t nodeIndex = 0;
+    std::vector<std::byte> serializedParams;
+    bool persist = false;
+};
+using AppEvent = std::variant<QuitEvent, SwitchModeEvent, ImportFilesEvent, SetRatingEvent, SetFlagEvent,
+                              SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent>;
 
 struct FrameContext {
     std::uint64_t frameIndex = 0;
@@ -155,6 +173,12 @@ public:
     [[nodiscard]] bool canvasAvailable() const noexcept { return developGraph_ != nullptr; }
     [[nodiscard]] const VulkanContext* gpu() const noexcept { return gpu_.get(); }
     [[nodiscard]] const std::string& activeAssetId() const noexcept { return activeAssetId_; }
+    // The develop stack currently on the canvas (an identity exposure node when
+    // no asset is open or its stack is empty).
+    [[nodiscard]] const std::vector<EditNodeRecord>& developStack() const noexcept { return developStack_; }
+    // Increments whenever the catalog may have changed (import finished,
+    // rating, flag or label written), so views know when to re-query.
+    [[nodiscard]] std::uint64_t catalogRevision() const noexcept { return catalogRevision_; }
     [[nodiscard]] std::size_t pendingImportCount() const noexcept { return pendingImports_.size(); }
     [[nodiscard]] AssetManager& assets();
     [[nodiscard]] LayerNode& document();
@@ -175,7 +199,10 @@ private:
     void handle(const SwitchModeEvent& event);
     void handle(const ImportFilesEvent& event);
     void handle(const SetRatingEvent& event);
+    void handle(const SetFlagEvent& event);
+    void handle(const SetColorLabelEvent& event);
     void handle(const OpenAssetEvent& event);
+    void handle(const SetDevelopParamsEvent& event);
     void pollImports();
     void uploadDirtyCanvasTiles();
     void renderFrame(FrameContext& frame);
@@ -199,6 +226,8 @@ private:
 
     std::vector<std::pair<std::string, std::future<AssetRecord>>> pendingImports_;
     std::string activeAssetId_;
+    std::vector<EditNodeRecord> developStack_;
+    std::uint64_t catalogRevision_ = 0;
 
     mutable std::mutex eventMutex_;
     std::deque<AppEvent> events_;  // guarded by eventMutex_
