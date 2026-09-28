@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 namespace darkhouse::ui {
 
@@ -66,8 +67,11 @@ public:
     }
 
 private:
+    void drawPhotoStatus(PanelContext& ctx, glm::vec2 origin, glm::vec2 region);
+
     float zoom_ = 0.0f;           // canvas pixels per screen pixel; 0 = fit to view
     glm::vec2 pan_{0.0f, 0.0f};   // offset of the image centre from the view centre, in screen pixels
+    std::string framedAssetId_;   // photo the zoom and pan belong to; a new photo opens fitted
 };
 
 // Horizontal strip of the visible assets.

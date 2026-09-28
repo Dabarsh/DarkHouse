@@ -306,16 +306,17 @@ void LayersPanel::drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth) {
 
 void LayersPanel::drawAddMenu(PanelContext& ctx) {
     if (!ImGui::BeginPopup("##AddLayer")) return;
-    const AppConfig& config = ctx.app.config();
-    const float w = static_cast<float>(config.canvasWidth);
-    const float h = static_cast<float>(config.canvasHeight);
+    const std::uint32_t width = ctx.app.canvasWidth();
+    const std::uint32_t height = ctx.app.canvasHeight();
+    const float w = static_cast<float>(width);
+    const float h = static_cast<float>(height);
 
     ImGui::SeparatorText("Raster");
     if (ImGui::MenuItem("Empty Raster Layer")) {
-        addLayer(ctx, LayerNode::createRaster(nextName("Layer"), config.canvasWidth, config.canvasHeight));
+        addLayer(ctx, LayerNode::createRaster(nextName("Layer"), width, height));
     }
     if (ImGui::MenuItem("Test Chart")) {
-        auto layer = LayerNode::createRaster(nextName("Test Chart"), config.canvasWidth, config.canvasHeight);
+        auto layer = LayerNode::createRaster(nextName("Test Chart"), width, height);
         paintTestChart(*layer->raster());
         addLayer(ctx, std::move(layer));
     }
@@ -385,7 +386,7 @@ void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
         row("Mask");
         if (!layer.mask()) {
             if (ImGui::SmallButton("Add Mask")) {
-                layer.addMask(ctx.app.config().canvasWidth, ctx.app.config().canvasHeight);
+                layer.addMask(ctx.app.canvasWidth(), ctx.app.canvasHeight());
                 invalidateComposite(root);
             }
         } else {

@@ -22,11 +22,12 @@ float finiteClamp(float value, float lo, float hi) { return std::isfinite(value)
 }  // namespace
 
 // -----------------------------------------------------------------------------
-// ExposureNode
+// PointOperatorNode
 // -----------------------------------------------------------------------------
 
-ExposureNode::ExposureNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory)
-    : context_(context) {
+PointOperatorNode::PointOperatorNode(const VulkanContext& context, const std::filesystem::path& shaderPath,
+                                     std::uint32_t pushConstantSize, PixelFormat outputFormat)
+    : context_(context), pushConstantSize_(pushConstantSize), outputFormat_(outputFormat) {
     const VkDevice device = context_.device();
     try {
         std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
@@ -45,17 +46,17 @@ ExposureNode::ExposureNode(const VulkanContext& context, const std::filesystem::
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pushRange.offset = 0;
-        pushRange.size = sizeof(ExposureParams);
+        pushRange.size = pushConstantSize_;
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &setLayout_;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pushConstantRangeCount = pushConstantSize_ > 0 ? 1 : 0;
         pipelineLayoutInfo.pPushConstantRanges = &pushRange;
         checkVk(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout_),
                 "vkCreatePipelineLayout");
 
-        const VkShaderModule module = context_.loadShaderModule(shaderDirectory / "exposure.spv");
+        const VkShaderModule module = context_.loadShaderModule(shaderPath);
         ScopeExit destroyModule([&] { vkDestroyShaderModule(device, module, nullptr); });
         VkComputePipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -89,9 +90,9 @@ ExposureNode::ExposureNode(const VulkanContext& context, const std::filesystem::
     }
 }
 
-ExposureNode::~ExposureNode() { destroy(); }
+PointOperatorNode::~PointOperatorNode() { destroy(); }
 
-void ExposureNode::destroy() noexcept {
+void PointOperatorNode::destroy() noexcept {
     const VkDevice device = context_.device();
     if (pipeline_ != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout_, nullptr);
@@ -105,11 +106,12 @@ void ExposureNode::destroy() noexcept {
     setLayout_ = VK_NULL_HANDLE;
 }
 
-void ExposureNode::setInputTexture(std::uint32_t slot, const GPUTexture& texture) {
-    if (slot != 0) throw std::out_of_range("ExposureNode has a single input (slot 0)");
-    if (!texture.valid()) throw std::invalid_argument("ExposureNode: input texture is not allocated");
+void PointOperatorNode::setInputTexture(std::uint32_t slot, const GPUTexture& texture) {
+    const std::string name(typeName());
+    if (slot != 0) throw std::out_of_range(name + " node has a single input (slot 0)");
+    if (!texture.valid()) throw std::invalid_argument(name + " node: input texture is not allocated");
     if (texture.format != PixelFormat::R16G16B16A16_SFLOAT) {
-        throw std::invalid_argument("ExposureNode: input must be R16G16B16A16_SFLOAT (rgba16f)");
+        throw std::invalid_argument(name + " node: input must be R16G16B16A16_SFLOAT (rgba16f)");
     }
 
     bool rewrite = texture.view != input_.view;
@@ -117,14 +119,14 @@ void ExposureNode::setInputTexture(std::uint32_t slot, const GPUTexture& texture
     if (!output_.valid() || output_.width != texture.width || output_.height != texture.height) {
         context_.destroyTexture(output_);
         output_ = context_.createTexture(
-            texture.width, texture.height, PixelFormat::R16G16B16A16_SFLOAT,
+            texture.width, texture.height, outputFormat_,
             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
         rewrite = true;
     }
     if (rewrite) writeDescriptors();
 }
 
-void ExposureNode::writeDescriptors() {
+void PointOperatorNode::writeDescriptors() {
     std::array<VkDescriptorImageInfo, 2> images{};
     images[0].imageView = input_.view;
     images[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -144,9 +146,9 @@ void ExposureNode::writeDescriptors() {
     vkUpdateDescriptorSets(context_.device(), static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
-void ExposureNode::executeCompute(VkCommandBuffer commandBuffer) {
+void PointOperatorNode::executeCompute(VkCommandBuffer commandBuffer) {
     if (!input_.valid() || !output_.valid()) {
-        throw std::logic_error("ExposureNode::executeCompute called before setInputTexture");
+        throw std::logic_error(std::string(typeName()) + " node: executeCompute called before setInputTexture");
     }
     // Every output texel is rewritten, so the old contents can be discarded.
     // Only a WAR execution dependency on earlier readers is needed.
@@ -156,11 +158,21 @@ void ExposureNode::executeCompute(VkCommandBuffer commandBuffer) {
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout_, 0, 1, &descriptorSet_, 0,
                             nullptr);
-    vkCmdPushConstants(commandBuffer, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ExposureParams),
-                       &params_);
+    if (pushConstantSize_ > 0) {
+        vkCmdPushConstants(commandBuffer, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstantSize_,
+                           pushConstants());
+    }
     vkCmdDispatch(commandBuffer, divideRoundUp(output_.width, kWorkgroupSize),
                   divideRoundUp(output_.height, kWorkgroupSize), 1);
 }
+
+// -----------------------------------------------------------------------------
+// ExposureNode
+// -----------------------------------------------------------------------------
+
+ExposureNode::ExposureNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory)
+    : PointOperatorNode(context, shaderDirectory / "exposure.spv", sizeof(ExposureParams),
+                        PixelFormat::R16G16B16A16_SFLOAT) {}
 
 void ExposureNode::updateUniforms(std::span<const std::byte> packedParams) {
     if (packedParams.size() != sizeof(ExposureParams)) {
@@ -183,6 +195,17 @@ std::vector<std::byte> ExposureNode::pack(const ExposureParams& params) {
     std::vector<std::byte> bytes(sizeof(ExposureParams));
     std::memcpy(bytes.data(), &params, sizeof params);
     return bytes;
+}
+
+// -----------------------------------------------------------------------------
+// DisplayTransformNode
+// -----------------------------------------------------------------------------
+
+DisplayTransformNode::DisplayTransformNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory)
+    : PointOperatorNode(context, shaderDirectory / "display_srgb.spv", 0, PixelFormat::R8G8B8A8_UNORM) {}
+
+void DisplayTransformNode::updateUniforms(std::span<const std::byte> packedParams) {
+    if (!packedParams.empty()) throw std::invalid_argument("DisplayTransformNode takes no parameters");
 }
 
 std::unique_ptr<ComputeNode> createComputeNode(std::string_view nodeType, const VulkanContext& context,

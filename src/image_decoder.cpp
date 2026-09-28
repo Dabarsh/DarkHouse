@@ -147,7 +147,7 @@ std::vector<float> toLinearResampled(const SourcePixels& src, std::uint32_t outW
 
     parallelRows(outHeight, [&](std::uint32_t begin, std::uint32_t end) {
         std::vector<float> row(std::size_t{outWidth} * 4);
-        float pixel[4];
+        float pixel[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         for (std::uint32_t oy = begin; oy < end; ++oy) {
             std::fill(row.begin(), row.end(), 0.0f);
             const double y0 = oy * sy;

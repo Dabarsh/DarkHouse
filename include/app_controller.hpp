@@ -3,8 +3,14 @@
 // DarkHouseApp owns every subsystem and runs the frame loop:
 //
 //   pump platform events -> drain AppEvent queue -> poll finished imports
-//   -> (canvas visible) upload dirty tiles, evaluate the develop graph
-//   -> front-end draws and presents -> pace to the target frame rate
+//   -> adopt a finished photo decode -> (canvas visible) upload dirty tiles,
+//   evaluate the develop graph -> front-end draws and presents -> pace to the
+//   target frame rate
+//
+// Opening an asset loads its develop stack at once and decodes its pixels on a
+// worker thread (image_decoder.hpp). The decoded photo replaces the document,
+// which is resized to it, so the canvas shows the photo with every develop
+// edit applied live.
 //
 // The windowing/UI layer sits behind the FrontEnd interface. The Dear ImGui +
 // Vulkan swapchain front-end (GuiEngine) plugs in there and shares the
@@ -14,6 +20,7 @@
 
 #include "ai_segmentation.hpp"
 #include "asset_manager.hpp"
+#include "image_decoder.hpp"
 #include "layer_stack.hpp"
 #include "render_pipeline.hpp"
 
@@ -48,8 +55,12 @@ struct AppConfig {
     std::filesystem::path shaderDirectory = "shaders";  // compiled *.spv
     std::filesystem::path modelDirectory;               // subject_segmentation.onnx / sky_segmentation.onnx
     AppMode initialMode = AppMode::CATALOG;
-    std::uint32_t canvasWidth = 2048;
+    std::uint32_t canvasWidth = 2048;  // the empty document before a photo is opened
     std::uint32_t canvasHeight = 2048;
+    // Longest edge of an opened photo on the canvas. Larger files are
+    // area-downscaled in linear light, which keeps live editing interactive;
+    // 0 loads full resolution.
+    std::uint32_t previewMaxDimension = 3072;
     bool enableGpu = true;
     bool enableValidationLayers = false;
     double targetFramesPerSecond = 60.0;
@@ -79,7 +90,7 @@ struct SetColorLabelEvent {
     ColorLabel label = ColorLabel::NONE;
 };
 struct OpenAssetEvent {
-    std::string assetId;  // loads its develop stack; leaves CATALOG for CANVAS
+    std::string assetId;  // loads its develop stack and photo; leaves CATALOG for CANVAS
 };
 // Replaces the parameters of one develop-stack node (same bytes as
 // edit_nodes.serialized_params) and re-renders the canvas. With `persist`,
@@ -97,11 +108,31 @@ struct FrameContext {
     std::uint64_t frameIndex = 0;
     double deltaSeconds = 0.0;
     AppMode mode = AppMode::CATALOG;
-    const GPUTexture* canvasOutput = nullptr;  // developed canvas, when rendered this frame
+    // Developed canvas after the display transform (sRGB-encoded RGBA8, straight
+    // alpha), when rendered this frame.
+    const GPUTexture* canvasOutput = nullptr;
     // Changes whenever canvasOutput may refer to a different image (develop
     // graph rebuilt or disabled). Image views can be recycled with the same
     // handle value, so front-ends key cached descriptors on this, not the view.
     std::uint64_t canvasGeneration = 0;
+};
+
+// The photo behind the canvas: the open asset's decoded pixels.
+struct PhotoStatus {
+    enum class State : std::uint8_t {
+        NONE,     // no asset opened yet: an empty document
+        LOADING,  // decoding on a worker thread; the canvas still shows the previous document
+        READY,    // the document holds the photo
+        FAILED,   // could not decode; the canvas is empty and `error` says why
+    };
+    State state = State::NONE;
+    std::string assetId;
+    std::string fileName;
+    std::string format;                // decoder's description, e.g. "JPEG", "NEF embedded JPEG preview"
+    std::uint32_t sourceWidth = 0;     // full-resolution size as displayed (EXIF orientation
+    std::uint32_t sourceHeight = 0;    // applied), before the preview downscale
+    double decodeSeconds = 0.0;        // decode + document build on the worker
+    std::string error;
 };
 
 struct RunSummary {
@@ -173,6 +204,11 @@ public:
     [[nodiscard]] bool canvasAvailable() const noexcept { return developGraph_ != nullptr; }
     [[nodiscard]] const VulkanContext* gpu() const noexcept { return gpu_.get(); }
     [[nodiscard]] const std::string& activeAssetId() const noexcept { return activeAssetId_; }
+    [[nodiscard]] const PhotoStatus& photo() const noexcept { return photo_; }
+    // Size of the document and canvas: the opened photo, or the configured
+    // empty canvas before one is opened.
+    [[nodiscard]] std::uint32_t canvasWidth() const noexcept { return canvasWidth_; }
+    [[nodiscard]] std::uint32_t canvasHeight() const noexcept { return canvasHeight_; }
     // The develop stack currently on the canvas (an identity exposure node when
     // no asset is open or its stack is empty).
     [[nodiscard]] const std::vector<EditNodeRecord>& developStack() const noexcept { return developStack_; }
@@ -191,6 +227,7 @@ public:
 private:
     void initializeGpu();
     void initializeCanvas();
+    void createCanvasTexture();
     void initializeAi();
     void disableCanvas() noexcept;  // drops the develop graph and canvas, keeps the context
     void disableGpu() noexcept;     // detaches the front-end, then drops everything
@@ -207,6 +244,9 @@ private:
     void handle(const OpenAssetEvent& event);
     void handle(const SetDevelopParamsEvent& event);
     void pollImports();
+    void startPhotoLoad(const AssetRecord& asset);
+    void pollPhotoLoad();
+    void replaceDocument(std::unique_ptr<LayerNode> document, std::uint32_t width, std::uint32_t height);
     void uploadDirtyCanvasTiles();
     void renderFrame(FrameContext& frame);
     [[nodiscard]] bool idle() const;
@@ -216,6 +256,8 @@ private:
     std::unique_ptr<FrontEnd> frontEnd_;
     std::unique_ptr<AssetManager> assets_;
     std::unique_ptr<LayerNode> document_;
+    std::uint32_t canvasWidth_ = 0;  // document size
+    std::uint32_t canvasHeight_ = 0;
     std::unique_ptr<AISegmentationEngine> segmentation_;
 
     // GPU objects. The context must outlive the graph and the canvas texture;
@@ -229,6 +271,23 @@ private:
 
     std::vector<std::pair<std::string, std::future<AssetRecord>>> pendingImports_;
     std::string activeAssetId_;
+
+    // Photo decoding. A superseded decode cannot be cancelled; its future
+    // (std::async, whose destructor blocks) is parked until it finishes.
+    struct LoadedPhoto {
+        std::unique_ptr<LayerNode> document;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::string format;
+        std::uint32_t sourceWidth = 0;
+        std::uint32_t sourceHeight = 0;
+        double seconds = 0.0;
+    };
+    [[nodiscard]] static LoadedPhoto loadPhoto(const std::filesystem::path& path, DecodeOptions options);
+    PhotoStatus photo_;
+    std::future<LoadedPhoto> photoLoad_;
+    std::vector<std::future<LoadedPhoto>> abandonedPhotoLoads_;
+
     std::vector<EditNodeRecord> developStack_;
     std::uint64_t catalogRevision_ = 0;
     std::vector<std::string> sessionImports_;

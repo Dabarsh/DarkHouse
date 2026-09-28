@@ -164,6 +164,9 @@ void GuiEngine::detachGpu() noexcept {
 bool GuiEngine::pumpPlatformEvents(DarkHouseApp& app) {
     // Background work that must keep the loop turning, but not at full rate.
     const bool engineBusy = app.pendingImportCount() > 0;
+    // A photo being decoded animates the viewport and must appear the moment
+    // it is ready: draw at the display rate until then (and settle after).
+    if (app.photo().state == PhotoStatus::State::LOADING) idleFrames_ = 0;
     if (window_->minimized()) {
         // Nothing to draw. Block briefly instead of spinning, but keep the
         // engine loop turning so imports still complete while minimized.

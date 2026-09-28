@@ -40,6 +40,48 @@ public:
     virtual void updateUniforms(std::span<const std::byte> packedParams) = 0;
 };
 
+// A one-input, one-output operator: a single compute pipeline over the whole
+// image with 16x16 workgroups, its parameters in push constants. The input
+// must be rgba16f; the output is allocated in `outputFormat` at the input size.
+class PointOperatorNode : public ComputeNode {
+public:
+    static constexpr std::uint32_t kWorkgroupSize = 16;  // local_size_x/y of the shaders
+
+    ~PointOperatorNode() override;
+
+    PointOperatorNode(const PointOperatorNode&) = delete;
+    PointOperatorNode& operator=(const PointOperatorNode&) = delete;
+
+    [[nodiscard]] std::uint32_t inputCount() const noexcept override { return 1; }
+
+    void setInputTexture(std::uint32_t slot, const GPUTexture& texture) override;
+    [[nodiscard]] const GPUTexture& getOutputTexture() const override { return output_; }
+    void executeCompute(VkCommandBuffer commandBuffer) override;
+
+protected:
+    // Loads `shaderPath` (SPIR-V). `pushConstantSize` may be 0.
+    PointOperatorNode(const VulkanContext& context, const std::filesystem::path& shaderPath,
+                      std::uint32_t pushConstantSize, PixelFormat outputFormat);
+
+    // pushConstantSize bytes, read whenever the node is recorded.
+    [[nodiscard]] virtual const void* pushConstants() const noexcept { return nullptr; }
+
+private:
+    void writeDescriptors();
+    void destroy() noexcept;
+
+    const VulkanContext& context_;
+    std::uint32_t pushConstantSize_;
+    PixelFormat outputFormat_;
+    VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+    VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
+    GPUTexture input_;
+    GPUTexture output_;
+};
+
 // Push-constant block of shaders/exposure.comp. The layout must match the shader.
 struct ExposureParams {
     float exposureEV = 0.0f;  // stops, clamped to [-10, 10]; linear gain is 2^EV
@@ -49,24 +91,14 @@ struct ExposureParams {
 };
 static_assert(sizeof(ExposureParams) == 16, "ExposureParams must match the shader push-constant block");
 
-class ExposureNode final : public ComputeNode {
+class ExposureNode final : public PointOperatorNode {
 public:
     static constexpr std::string_view kTypeName = "exposure";
-    static constexpr std::uint32_t kWorkgroupSize = 16;  // local_size_x/y in exposure.comp
 
     // Loads <shaderDirectory>/exposure.spv.
     ExposureNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory);
-    ~ExposureNode() override;
-
-    ExposureNode(const ExposureNode&) = delete;
-    ExposureNode& operator=(const ExposureNode&) = delete;
 
     [[nodiscard]] std::string_view typeName() const noexcept override { return kTypeName; }
-    [[nodiscard]] std::uint32_t inputCount() const noexcept override { return 1; }
-
-    void setInputTexture(std::uint32_t slot, const GPUTexture& texture) override;
-    [[nodiscard]] const GPUTexture& getOutputTexture() const override { return output_; }
-    void executeCompute(VkCommandBuffer commandBuffer) override;
     void updateUniforms(std::span<const std::byte> packedParams) override;
 
     void setParams(const ExposureParams& params) noexcept;
@@ -77,18 +109,24 @@ public:
     [[nodiscard]] static std::vector<std::byte> pack(const ExposureParams& params);
 
 private:
-    void writeDescriptors();
-    void destroy() noexcept;
+    [[nodiscard]] const void* pushConstants() const noexcept override { return &params_; }
 
-    const VulkanContext& context_;
-    VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_ = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
-    VkDescriptorSet descriptorSet_ = VK_NULL_HANDLE;
-    GPUTexture input_;
-    GPUTexture output_;
     ExposureParams params_;
+};
+
+// The view transform at the end of the develop graph: scene-linear rgba16f to
+// sRGB-encoded RGBA8 for the UNORM swapchain the UI draws into (values are
+// clipped to [0, 1], with a triangular dither of +-1 LSB against banding).
+// Not a develop step: it is never stored in an edit stack.
+class DisplayTransformNode final : public PointOperatorNode {
+public:
+    static constexpr std::string_view kTypeName = "display_srgb";
+
+    // Loads <shaderDirectory>/display_srgb.spv.
+    DisplayTransformNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory);
+
+    [[nodiscard]] std::string_view typeName() const noexcept override { return kTypeName; }
+    void updateUniforms(std::span<const std::byte> packedParams) override;  // takes no parameters
 };
 
 // Maps an edit_nodes.node_type string to a node. Throws std::invalid_argument

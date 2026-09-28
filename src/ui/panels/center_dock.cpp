@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 
 namespace darkhouse::ui {
@@ -192,6 +193,13 @@ void ViewportPanel::draw(PanelContext& ctx) {
         return;
     }
 
+    const PhotoStatus& photo = ctx.app.photo();
+    if (photo.state == PhotoStatus::State::READY && photo.assetId != framedAssetId_) {
+        framedAssetId_ = photo.assetId;  // a newly opened photo starts fitted to the view
+        zoom_ = 0.0f;
+        pan_ = glm::vec2(0.0f);
+    }
+
     // Interaction surface covering the whole view.
     ImGui::InvisibleButton("##Canvas", region,
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
@@ -246,6 +254,7 @@ void ViewportPanel::draw(PanelContext& ctx) {
     drawList->AddImage(texture, imageMin, imageMax);
     drawList->AddRect(imageMin - glm::vec2(1.0f), imageMax + glm::vec2(1.0f), IM_COL32(0, 0, 0, 160));
     drawList->PopClipRect();
+    drawPhotoStatus(ctx, origin, region);
 
     // Toolbar overlay (top-left).
     ImGui::SetCursorScreenPos(origin + glm::vec2(8.0f, 8.0f));
@@ -263,11 +272,17 @@ void ViewportPanel::draw(PanelContext& ctx) {
     ImGui::Text("%.0f%%", scale * 100.0f);
     ImGui::PopStyleVar();
 
-    // Info overlay (bottom-left): document, develop stack, cursor position.
-    std::string info = std::to_string(static_cast<int>(imageSize.x)) + " x " +
-                       std::to_string(static_cast<int>(imageSize.y)) + "  RGBA16F linear";
-    if (const AssetRecord* asset = ctx.library.findAsset(ctx.app.activeAssetId())) {
-        info += "  |  develop stack of " + asset->fileName;
+    // Info overlay (bottom-left): photo, canvas, develop stack, cursor position.
+    std::string info;
+    if (photo.state == PhotoStatus::State::READY) {
+        info = photo.fileName + "  " + photo.format + " " + std::to_string(photo.sourceWidth) + " x " +
+               std::to_string(photo.sourceHeight) + "  |  ";
+    }
+    info += "canvas " + std::to_string(static_cast<int>(imageSize.x)) + " x " +
+            std::to_string(static_cast<int>(imageSize.y));
+    if (photo.state == PhotoStatus::State::READY &&
+        (photo.sourceWidth != ctx.app.canvasWidth() || photo.sourceHeight != ctx.app.canvasHeight())) {
+        info += " preview";
     }
     info += "  |  " + std::to_string(ctx.app.developStack().size()) + " develop node(s)";
     if (hovered) {
@@ -282,6 +297,60 @@ void ViewportPanel::draw(PanelContext& ctx) {
     drawList->AddRectFilled(infoPos - glm::vec2(4.0f, 2.0f), infoPos + infoSize + glm::vec2(4.0f, 2.0f),
                             IM_COL32(0, 0, 0, 140), 3.0f);
     drawList->AddText(infoPos, ImGui::GetColorU32(ImGuiCol_Text, 0.85f), info.c_str());
+}
+
+// Loading spinner, decode error, or how to open a photo, over the canvas.
+void ViewportPanel::drawPhotoStatus(PanelContext& ctx, glm::vec2 origin, glm::vec2 region) {
+    const PhotoStatus& photo = ctx.app.photo();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const glm::vec2 center = origin + region * 0.5f;
+    const float fontSize = ImGui::GetFontSize();
+
+    // A rounded panel holding `lines` (first line in `titleColor`), centred in the view.
+    auto card = [&](std::initializer_list<std::string> lines, ImU32 titleColor, float topPadding) {
+        const float wrap = std::min(region.x - 48.0f, fontSize * 34.0f);
+        glm::vec2 size(0.0f, topPadding);
+        for (const std::string& line : lines) {
+            const glm::vec2 lineSize = ImGui::CalcTextSize(line.c_str(), nullptr, false, wrap);
+            size = glm::vec2(std::max(size.x, lineSize.x), size.y + lineSize.y + 4.0f);
+        }
+        const glm::vec2 padding(fontSize * 1.2f, fontSize * 0.8f);
+        const glm::vec2 min = center - size * 0.5f - padding;
+        drawList->AddRectFilled(min, center + size * 0.5f + padding, IM_COL32(16, 16, 18, 230), 6.0f);
+        glm::vec2 cursor(center.x, min.y + padding.y + topPadding);
+        bool first = true;
+        for (const std::string& line : lines) {
+            const glm::vec2 lineSize = ImGui::CalcTextSize(line.c_str(), nullptr, false, wrap);
+            drawList->AddText(ImGui::GetFont(), fontSize, glm::vec2(cursor.x - lineSize.x * 0.5f, cursor.y),
+                              first ? titleColor : ImGui::GetColorU32(ImGuiCol_TextDisabled), line.c_str(), nullptr,
+                              wrap);
+            cursor.y += lineSize.y + 4.0f;
+            first = false;
+        }
+        return min;
+    };
+
+    switch (photo.state) {
+    case PhotoStatus::State::LOADING: {
+        drawList->AddRectFilled(origin, origin + region, IM_COL32(22, 22, 24, 150));  // dim the previous photo
+        const float radius = fontSize * 0.9f;
+        const glm::vec2 top = card({"Loading " + photo.fileName, "decoding the photo for the canvas"},
+                                   ImGui::GetColorU32(ImGuiCol_Text), radius * 2.0f + 10.0f);
+        const float angle = static_cast<float>(ImGui::GetTime()) * 5.0f;
+        const glm::vec2 spinner(center.x, top.y + fontSize * 0.8f + radius + 2.0f);
+        drawList->PathArcTo(spinner, radius, angle, angle + 4.4f, 24);
+        drawList->PathStroke(ImGui::GetColorU32(theme::kAccent), 2.5f);
+        break;
+    }
+    case PhotoStatus::State::FAILED:
+        card({"Cannot display " + photo.fileName, photo.error}, ImGui::GetColorU32(theme::kReject), 0.0f);
+        break;
+    case PhotoStatus::State::NONE:
+        card({"No photo open", "Double-click a photo in the Library or Filmstrip, or select it and press Enter."},
+             ImGui::GetColorU32(ImGuiCol_Text), 0.0f);
+        break;
+    case PhotoStatus::State::READY: break;
+    }
 }
 
 // -----------------------------------------------------------------------------

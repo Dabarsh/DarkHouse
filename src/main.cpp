@@ -59,9 +59,11 @@ void printUsage(std::ostream& out) {
            "                          a (assets) and m (metadata), e.g. \"a.rating >= 3 AND m.iso <= 800\"\n"
            "                          (use \"\" to list everything)\n"
            "  --rate <asset-id> <0-5> set an asset's star rating\n"
-           "  --open <asset-id>       load an asset's develop stack onto the canvas\n"
+           "  --open <asset-id>       open an asset on the canvas: its photo and develop stack\n"
            "  --mode <catalog|canvas|split>\n"
-           "  --canvas <W>x<H>        document size in pixels (default 2048x2048)\n"
+           "  --canvas <W>x<H>        empty document size before a photo is opened (default 2048x2048)\n"
+           "  --preview-size <px>     longest edge of an opened photo on the canvas; larger files are\n"
+           "                          downscaled for interactive editing (default 3072, 0 = full size)\n"
            "  --shaders <dir>         directory containing compiled *.spv shaders\n"
            "  --models <dir>          directory containing *_segmentation.onnx models\n"
            "  --frames <n>            run exactly n frames, then exit (headless: instead of exiting when idle)\n"
@@ -203,6 +205,12 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
             }
             cli.config.canvasWidth = w;
             cli.config.canvasHeight = h;
+        } else if (arg == "--preview-size") {
+            const auto v = value();
+            char* end = nullptr;
+            const unsigned long size = v ? std::strtoul(v->c_str(), &end, 10) : 0;
+            if (!v || v->empty() || *end != '\0' || size > 65536) return fail("--preview-size needs 0..65536 pixels");
+            cli.config.previewMaxDimension = static_cast<std::uint32_t>(size);
         } else if (arg == "--shaders") {
             const auto v = value();
             if (!v) return fail("--shaders needs a directory");

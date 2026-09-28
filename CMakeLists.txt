@@ -52,6 +52,7 @@ endif()
 # ------------------------------------------------------------------------------
 set(DARKHOUSE_SHADER_SOURCES
     shaders/exposure.comp
+    shaders/display_srgb.comp
     shaders/denoise_down0.comp
     shaders/denoise_down.comp
     shaders/denoise_sigma.comp
@@ -312,6 +313,15 @@ if(DARKHOUSE_BUILD_TESTS)
     darkhouse_apply_build_flags(darkhouse_image_decoder_test)
     add_test(NAME image_decoder COMMAND darkhouse_image_decoder_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
     set_tests_properties(image_decoder PROPERTIES LABELS "preview" TIMEOUT 60)
+
+    add_executable(darkhouse_photo_preview_test tests/photo_preview_test.cpp)
+    target_link_libraries(darkhouse_photo_preview_test PRIVATE darkhouse_core darkhouse_stb)
+    target_compile_definitions(darkhouse_photo_preview_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+    darkhouse_apply_build_flags(darkhouse_photo_preview_test)
+    add_test(NAME photo_preview COMMAND darkhouse_photo_preview_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
+    set_tests_properties(photo_preview PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS "preview;vulkan" TIMEOUT 300
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
 
     add_executable(darkhouse_denoise_gpu_test tests/denoise_gpu_test.cpp)
     target_link_libraries(darkhouse_denoise_gpu_test PRIVATE darkhouse_core)

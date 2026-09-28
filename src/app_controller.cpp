@@ -20,6 +20,17 @@ void logLine(const char* level, const Args&... args) {
     std::clog << line.str();
 }
 
+std::unique_ptr<LayerNode> emptyDocument(std::uint32_t width, std::uint32_t height) {
+    std::unique_ptr<LayerNode> document = LayerNode::createGroup("Document");
+    document->addChild(LayerNode::createRaster("Background", width, height));
+    return document;
+}
+
+template <class T>
+bool isReady(const std::future<T>& future) {
+    return future.valid() && future.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
 class HeadlessFrontEnd final : public FrontEnd {
 public:
     bool pumpPlatformEvents(DarkHouseApp&) override { return true; }
@@ -86,8 +97,9 @@ void DarkHouseApp::initialize() {
 
     // 2. Document: a group root with one empty background layer. Tiles are
     //    sparse, so an untouched canvas uses no pixel memory.
-    document_ = LayerNode::createGroup("Document");
-    document_->addChild(LayerNode::createRaster("Background", config_.canvasWidth, config_.canvasHeight));
+    canvasWidth_ = config_.canvasWidth;
+    canvasHeight_ = config_.canvasHeight;
+    document_ = emptyDocument(canvasWidth_, canvasHeight_);
 
     // 3. GPU and AI are optional, and each degrades on its own.
     if (config_.enableGpu) {
@@ -136,19 +148,21 @@ void DarkHouseApp::initializeGpu() {
 
 void DarkHouseApp::initializeCanvas() {
     try {
-        canvasTexture_ = gpu_->createTexture(config_.canvasWidth, config_.canvasHeight,
-                                             PixelFormat::R16G16B16A16_SFLOAT,
-                                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-        gpu_->clearTexture(canvasTexture_, 0.0f, 0.0f, 0.0f, 0.0f);
-
+        createCanvasTexture();
         developGraph_ = std::make_unique<RenderPipelineGraph>();
         rebuildDevelopGraph({});
-        logLine("info", "canvas ", config_.canvasWidth, "x", config_.canvasHeight, " RGBA16F");
+        logLine("info", "canvas ", canvasWidth_, "x", canvasHeight_, " RGBA16F");
     } catch (const std::exception& e) {
         logLine("warn", "canvas rendering disabled: ", e.what());
         disableCanvas();
     }
+}
+
+void DarkHouseApp::createCanvasTexture() {
+    canvasTexture_ = gpu_->createTexture(canvasWidth_, canvasHeight_, PixelFormat::R16G16B16A16_SFLOAT,
+                                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    gpu_->clearTexture(canvasTexture_, 0.0f, 0.0f, 0.0f, 0.0f);
 }
 
 void DarkHouseApp::initializeAi() {
@@ -205,8 +219,8 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
     ++canvasGeneration_;
 
     // A develop stack is a linear chain: canvas -> node 0 -> node 1 -> ...
-    // An empty stack still gets an identity exposure node, so the canvas always
-    // has a developed output.
+    // -> display transform. An empty stack still gets an identity exposure
+    // node. Node ids equal stack indices; the display node comes last.
     std::vector<EditNodeRecord> stack = editStack;
     if (stack.empty()) stack.push_back({0, std::string(ExposureNode::kTypeName), ExposureNode::pack(ExposureParams{})});
     developStack_ = stack;
@@ -223,6 +237,9 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
         }
         previous = id;
     }
+    const RenderPipelineGraph::NodeId display =
+        developGraph_->addNode(std::make_unique<DisplayTransformNode>(*gpu_, config_.shaderDirectory));
+    developGraph_->connectNodes(*previous, display, 0);
     graphDirty_ = true;
 }
 
@@ -248,6 +265,7 @@ int DarkHouseApp::run() {
         if (!frontEnd_->pumpPlatformEvents(*this)) requestQuit();
         processEvents();
         pollImports();
+        pollPhotoLoad();
 
         frame.mode = mode();
         if (showsCanvas(frame.mode) && developGraph_) {
@@ -383,6 +401,7 @@ void DarkHouseApp::handle(const OpenAssetEvent& event) {
         }
         activeAssetId_ = asset->id;
         rebuildDevelopGraph(assets_->loadEditStack(asset->id));
+        startPhotoLoad(*asset);
         logLine("info", "opened ", asset->fileName, " [", asset->id, "]");
         if (mode() == AppMode::CATALOG) handle(SwitchModeEvent{AppMode::CANVAS});
     } catch (const std::exception& e) {
@@ -414,6 +433,89 @@ void DarkHouseApp::pollImports() {
     }
 }
 
+DarkHouseApp::LoadedPhoto DarkHouseApp::loadPhoto(const std::filesystem::path& path, DecodeOptions options) {
+    const auto start = std::chrono::steady_clock::now();
+    const DecodedImage image = decodeImage(path, options);
+    LoadedPhoto photo;
+    photo.document = LayerNode::createGroup("Document");
+    LayerNode& background = photo.document->addChild(LayerNode::createRaster("Background", image.width, image.height));
+    background.raster()->writeRegion(0, 0, image.width, image.height, image.rgba);
+    photo.width = image.width;
+    photo.height = image.height;
+    photo.format = image.format;
+    const bool quarterTurn = image.orientation >= 5;  // EXIF 5..8 swap the axes
+    photo.sourceWidth = quarterTurn ? image.sourceHeight : image.sourceWidth;
+    photo.sourceHeight = quarterTurn ? image.sourceWidth : image.sourceHeight;
+    photo.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    return photo;
+}
+
+void DarkHouseApp::startPhotoLoad(const AssetRecord& asset) {
+    std::future<LoadedPhoto> load = std::async(std::launch::async, &DarkHouseApp::loadPhoto,
+                                               std::filesystem::path(asset.filePath),
+                                               DecodeOptions{config_.previewMaxDimension});
+    if (photoLoad_.valid()) abandonedPhotoLoads_.push_back(std::move(photoLoad_));
+    photoLoad_ = std::move(load);
+    photo_ = PhotoStatus{};
+    photo_.state = PhotoStatus::State::LOADING;
+    photo_.assetId = asset.id;
+    photo_.fileName = asset.fileName;
+}
+
+void DarkHouseApp::pollPhotoLoad() {
+    std::erase_if(abandonedPhotoLoads_, [](const std::future<LoadedPhoto>& load) { return isReady(load); });
+    if (!isReady(photoLoad_)) return;
+    try {
+        LoadedPhoto loaded = photoLoad_.get();
+        photo_.state = PhotoStatus::State::READY;
+        photo_.format = loaded.format;
+        photo_.sourceWidth = loaded.sourceWidth;
+        photo_.sourceHeight = loaded.sourceHeight;
+        photo_.decodeSeconds = loaded.seconds;
+        std::ostringstream scaled;
+        if (loaded.width != loaded.sourceWidth || loaded.height != loaded.sourceHeight) {
+            scaled << " -> " << loaded.width << 'x' << loaded.height << " preview";
+        }
+        logLine("info", "photo ", photo_.fileName, ": ", loaded.format, ' ', loaded.sourceWidth, 'x',
+            loaded.sourceHeight, scaled.str(), " in ", static_cast<int>(loaded.seconds * 1000.0 + 0.5), " ms");
+        replaceDocument(std::move(loaded.document), loaded.width, loaded.height);
+    } catch (const std::exception& e) {
+        // A photo that cannot be shown must not leave the previous one on screen.
+        photo_.state = PhotoStatus::State::FAILED;
+        photo_.error = e.what();
+        const std::string prefix = photo_.fileName + ": ";  // decoder messages name the file; so does the UI
+        if (photo_.error.starts_with(prefix)) photo_.error.erase(0, prefix.size());
+        logLine("error", "cannot display ", photo_.fileName, ": ", photo_.error);
+        replaceDocument(emptyDocument(canvasWidth_, canvasHeight_), canvasWidth_, canvasHeight_);
+    }
+}
+
+void DarkHouseApp::replaceDocument(std::unique_ptr<LayerNode> document, std::uint32_t width, std::uint32_t height) {
+    document_ = std::move(document);
+    const bool resized = width != canvasWidth_ || height != canvasHeight_;
+    canvasWidth_ = width;
+    canvasHeight_ = height;
+    if (!gpu_ || !developGraph_) return;
+    try {
+        if (resized) {
+            // The graph samples the canvas and in-flight UI frames sample the
+            // graph's outputs; both are recreated at the new size.
+            gpu_->waitIdle();
+            gpu_->destroyTexture(canvasTexture_);
+            createCanvasTexture();
+            rebuildDevelopGraph(developStack_);
+        } else {
+            // Tiles the new document never wrote must read as transparent,
+            // not as the previous document.
+            gpu_->clearTexture(canvasTexture_, 0.0f, 0.0f, 0.0f, 0.0f);
+            graphDirty_ = true;
+        }
+    } catch (const std::exception& e) {
+        logLine("error", "canvas ", width, "x", height, " could not be created, disabling canvas rendering: ", e.what());
+        disableCanvas();
+    }
+}
+
 void DarkHouseApp::uploadDirtyCanvasTiles() {
     if (!gpu_) return;
     const std::vector<TileKey> dirty = takeDirtyTiles(*document_);
@@ -425,7 +527,7 @@ void DarkHouseApp::uploadDirtyCanvasTiles() {
     texels.reserve(dirty.size());
     uploads.reserve(dirty.size());
     for (const TileKey& key : dirty) {
-        const CompositedTile tile = compositeTileCPU(*document_, key, config_.canvasWidth, config_.canvasHeight);
+        const CompositedTile tile = compositeTileCPU(*document_, key, canvasWidth_, canvasHeight_);
         std::vector<std::uint16_t>& halves = texels.emplace_back(tile.rgba.size());
         std::transform(tile.rgba.begin(), tile.rgba.end(), halves.begin(), floatToHalf);
 
@@ -453,7 +555,7 @@ void DarkHouseApp::renderFrame(FrameContext& frame) {
 
 bool DarkHouseApp::idle() const {
     std::lock_guard lock(eventMutex_);
-    return events_.empty() && pendingImports_.empty();
+    return events_.empty() && pendingImports_.empty() && !photoLoad_.valid();
 }
 
 void DarkHouseApp::shutdown() noexcept {
@@ -463,6 +565,9 @@ void DarkHouseApp::shutdown() noexcept {
     // AssetManager's destructor lets in-flight imports finish and drops the rest.
     summary_.importsCancelled += pendingImports_.size();
     pendingImports_.clear();
+    // These do block, until the decodes in flight finish.
+    photoLoad_ = {};
+    abandonedPhotoLoads_.clear();
     segmentation_.reset();
     disableGpu();
     document_.reset();
