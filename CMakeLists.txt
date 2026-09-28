@@ -192,11 +192,15 @@ if(DARKHOUSE_GUI)
         src/ui/shell.cpp
         src/ui/panel.cpp
         src/ui/workspace_layout.cpp
+        src/ui/theme.cpp
+        src/ui/widgets.cpp
         include/platform_window.hpp
         include/gui_engine.hpp
         include/ui/shell.hpp
         include/ui/panel.hpp
-        include/ui/workspace_layout.hpp)
+        include/ui/workspace_layout.hpp
+        include/ui/theme.hpp
+        include/ui/widgets.hpp)
     target_link_libraries(darkhouse_gui PUBLIC darkhouse_core DarkHouse::imgui glfw glm::glm)
     target_compile_definitions(darkhouse_gui PUBLIC DARKHOUSE_WITH_GUI=1)
     darkhouse_apply_build_flags(darkhouse_gui)

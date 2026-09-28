@@ -1,5 +1,7 @@
 #include "ui/shell.hpp"
 
+#include "ui/theme.hpp"
+
 #include <imgui_internal.h>  // BeginViewportSideBar
 
 #include <chrono>
@@ -14,10 +16,9 @@
 namespace darkhouse::ui {
 namespace {
 
-// Darkroom safelight red: the one accent colour of the DarkHouse chrome.
-constexpr ImVec4 kAccent{0.89f, 0.33f, 0.24f, 1.0f};
-constexpr ImVec4 kAccentHovered{0.96f, 0.42f, 0.32f, 1.0f};
-constexpr ImVec4 kAccentActive{0.78f, 0.27f, 0.19f, 1.0f};
+using theme::kAccent;
+using theme::kAccentActive;
+using theme::kAccentHovered;
 
 constexpr std::array<AppMode, kWorkspaceCount> kModes{AppMode::CATALOG, AppMode::CANVAS, AppMode::HYBRID_SPLIT};
 
