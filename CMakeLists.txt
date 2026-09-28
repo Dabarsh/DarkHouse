@@ -102,76 +102,32 @@ inline constexpr const char kCatalogSchemaSql[] = R"darkhouse_sql(@DARKHOUSE_CAT
     @ONLY)
 
 # ------------------------------------------------------------------------------
-# Executable
+# Targets
+#   darkhouse_core  engine: catalog, Vulkan context, swapchain, render pipeline,
+#                   layers, AI, application controller and the library view
+#                   model (no UI toolkit)
+#   darkhouse_gui   desktop front-end: GLFW window, ImGui engine, shell, panels
+#   DarkHouse       the executable: command line and front-end selection
+# Tests link the libraries instead of recompiling sources.
 # ------------------------------------------------------------------------------
-add_executable(DarkHouse
-    src/main.cpp
-    src/app_controller.cpp
-    src/asset_manager.cpp
-    src/import_scan.cpp
-    src/app_paths.cpp
-    src/vulkan_context.cpp
-    src/swapchain.cpp
-    src/render_pipeline.cpp
-    src/layer_stack.cpp
-    src/ai_segmentation.cpp
-    include/app_controller.hpp
-    include/asset_manager.hpp
-    include/import_scan.hpp
-    include/app_paths.hpp
-    include/vulkan_context.hpp
-    include/vulkan_utils.hpp
-    include/swapchain.hpp
-    include/render_pipeline.hpp
-    include/layer_stack.hpp
-    include/ai_segmentation.hpp
-    schema/catalog.sql)
 
-add_dependencies(DarkHouse darkhouse_shaders)
-
-target_include_directories(DarkHouse PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${DARKHOUSE_GENERATED_DIR}")
-
-target_link_libraries(DarkHouse PRIVATE
-    Vulkan::Vulkan
-    ${DARKHOUSE_SQLITE_TARGET}
-    Threads::Threads)
-
-target_compile_definitions(DarkHouse PRIVATE
-    DARKHOUSE_VERSION="${PROJECT_VERSION}"
-    DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
-
-set_target_properties(DarkHouse PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-if(DARKHOUSE_GUI)
-    target_sources(DarkHouse PRIVATE
-        src/platform_window.cpp
-        src/gui_engine.cpp
-        src/ui/shell.cpp
-        src/ui/panel.cpp
-        src/ui/workspace_layout.cpp
-        src/ui/library_model.cpp
-        include/platform_window.hpp
-        include/gui_engine.hpp
-        include/ui/shell.hpp
-        include/ui/panel.hpp
-        include/ui/workspace_layout.hpp
-        include/ui/library_model.hpp)
-    target_link_libraries(DarkHouse PRIVATE DarkHouse::imgui glfw glm::glm)
-    target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_WITH_GUI=1)
-endif()
-
-# Vulkan validation default (see DARKHOUSE_VULKAN_VALIDATION above).
-if(DARKHOUSE_VULKAN_VALIDATION STREQUAL "AUTO")
-    set(DARKHOUSE_VALIDATION_DEFAULT "$<IF:$<CONFIG:Debug,RelWithDebInfo>,1,0>")
-elseif(DARKHOUSE_VULKAN_VALIDATION)
-    set(DARKHOUSE_VALIDATION_DEFAULT 1)
-else()
-    set(DARKHOUSE_VALIDATION_DEFAULT 0)
-endif()
-target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_VALIDATION_DEFAULT=${DARKHOUSE_VALIDATION_DEFAULT})
+# Strict warnings and platform flags for every first-party target.
+function(darkhouse_apply_build_flags target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /Zc:__cplusplus /MP)
+        target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+        if(DARKHOUSE_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
+        # Bounds-checked standard containers in Debug builds (ABI-neutral).
+        target_compile_definitions(${target} PRIVATE $<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS>)
+        if(DARKHOUSE_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+    endif()
+endfunction()
 
 # Where the Khronos validation layer manifest lives. When the loader cannot
 # find the layer at runtime (SDK not installed system-wide), the context adds
@@ -190,26 +146,79 @@ find_path(DARKHOUSE_VK_LAYER_MANIFEST_DIR
         /opt/homebrew/share/vulkan/explicit_layer.d
     NO_DEFAULT_PATH)
 mark_as_advanced(DARKHOUSE_VK_LAYER_MANIFEST_DIR)
+
+# --- darkhouse_core -----------------------------------------------------------
+add_library(darkhouse_core STATIC
+    src/app_controller.cpp
+    src/asset_manager.cpp
+    src/import_scan.cpp
+    src/app_paths.cpp
+    src/vulkan_context.cpp
+    src/swapchain.cpp
+    src/render_pipeline.cpp
+    src/layer_stack.cpp
+    src/ai_segmentation.cpp
+    src/ui/library_model.cpp
+    include/app_controller.hpp
+    include/asset_manager.hpp
+    include/import_scan.hpp
+    include/app_paths.hpp
+    include/vulkan_context.hpp
+    include/vulkan_utils.hpp
+    include/swapchain.hpp
+    include/render_pipeline.hpp
+    include/layer_stack.hpp
+    include/ai_segmentation.hpp
+    include/ui/library_model.hpp
+    schema/catalog.sql)
+add_dependencies(darkhouse_core darkhouse_shaders)
+target_include_directories(darkhouse_core
+    PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PRIVATE "${DARKHOUSE_GENERATED_DIR}")
+target_link_libraries(darkhouse_core
+    PUBLIC  Vulkan::Vulkan Threads::Threads
+    PRIVATE ${DARKHOUSE_SQLITE_TARGET})
+target_compile_definitions(darkhouse_core PUBLIC DARKHOUSE_VERSION="${PROJECT_VERSION}")
 if(DARKHOUSE_VK_LAYER_MANIFEST_DIR)
-    set(DARKHOUSE_VK_LAYER_DEFINITION DARKHOUSE_VK_LAYER_DIR="${DARKHOUSE_VK_LAYER_MANIFEST_DIR}")
-    target_compile_definitions(DarkHouse PRIVATE ${DARKHOUSE_VK_LAYER_DEFINITION})
+    target_compile_definitions(darkhouse_core PRIVATE DARKHOUSE_VK_LAYER_DIR="${DARKHOUSE_VK_LAYER_MANIFEST_DIR}")
+endif()
+darkhouse_apply_build_flags(darkhouse_core)
+
+# --- darkhouse_gui ------------------------------------------------------------
+if(DARKHOUSE_GUI)
+    add_library(darkhouse_gui STATIC
+        src/platform_window.cpp
+        src/gui_engine.cpp
+        src/ui/shell.cpp
+        src/ui/panel.cpp
+        src/ui/workspace_layout.cpp
+        include/platform_window.hpp
+        include/gui_engine.hpp
+        include/ui/shell.hpp
+        include/ui/panel.hpp
+        include/ui/workspace_layout.hpp)
+    target_link_libraries(darkhouse_gui PUBLIC darkhouse_core DarkHouse::imgui glfw glm::glm)
+    target_compile_definitions(darkhouse_gui PUBLIC DARKHOUSE_WITH_GUI=1)
+    darkhouse_apply_build_flags(darkhouse_gui)
 endif()
 
-# Compiler flags shared by every platform: strict warnings, UTF-8 sources, and
-# standard-library assertions in Debug builds.
-if(MSVC)
-    target_compile_options(DarkHouse PRIVATE /W4 /permissive- /utf-8 /Zc:__cplusplus /MP)
-    target_compile_definitions(DarkHouse PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
-    if(DARKHOUSE_WARNINGS_AS_ERRORS)
-        target_compile_options(DarkHouse PRIVATE /WX)
-    endif()
+# --- DarkHouse executable -----------------------------------------------------
+add_executable(DarkHouse src/main.cpp)
+target_link_libraries(DarkHouse PRIVATE darkhouse_core $<$<BOOL:${DARKHOUSE_GUI}>:darkhouse_gui>)
+
+# Vulkan validation default (see DARKHOUSE_VULKAN_VALIDATION above).
+if(DARKHOUSE_VULKAN_VALIDATION STREQUAL "AUTO")
+    set(DARKHOUSE_VALIDATION_DEFAULT "$<IF:$<CONFIG:Debug,RelWithDebInfo>,1,0>")
+elseif(DARKHOUSE_VULKAN_VALIDATION)
+    set(DARKHOUSE_VALIDATION_DEFAULT 1)
 else()
-    target_compile_options(DarkHouse PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
-    target_compile_definitions(DarkHouse PRIVATE $<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS>)
-    if(DARKHOUSE_WARNINGS_AS_ERRORS)
-        target_compile_options(DarkHouse PRIVATE -Werror)
-    endif()
+    set(DARKHOUSE_VALIDATION_DEFAULT 0)
 endif()
+target_compile_definitions(DarkHouse PRIVATE
+    DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}"
+    DARKHOUSE_VALIDATION_DEFAULT=${DARKHOUSE_VALIDATION_DEFAULT})
+set_target_properties(DarkHouse PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+darkhouse_apply_build_flags(DarkHouse)
 
 # ------------------------------------------------------------------------------
 # Optional: ONNX Runtime (AI subject / sky segmentation)
@@ -226,9 +235,9 @@ if(NOT DARKHOUSE_ONNXRUNTIME STREQUAL "OFF")
         PATH_SUFFIXES lib lib64)
     if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
         set(DARKHOUSE_HAVE_ONNXRUNTIME ON)
-        target_include_directories(DarkHouse SYSTEM PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
-        target_link_libraries(DarkHouse PRIVATE "${ONNXRUNTIME_LIBRARY}")
-        target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_WITH_ONNXRUNTIME=1)
+        target_include_directories(darkhouse_core SYSTEM PRIVATE "${ONNXRUNTIME_INCLUDE_DIR}")
+        target_link_libraries(darkhouse_core PRIVATE "${ONNXRUNTIME_LIBRARY}")
+        target_compile_definitions(darkhouse_core PRIVATE DARKHOUSE_WITH_ONNXRUNTIME=1)
     elseif(DARKHOUSE_ONNXRUNTIME STREQUAL "ON")
         message(FATAL_ERROR "DARKHOUSE_ONNXRUNTIME=ON but ONNX Runtime was not found; set ONNXRUNTIME_ROOT.")
     endif()
@@ -253,22 +262,18 @@ message(STATUS "  Validation:    ${DARKHOUSE_VULKAN_VALIDATION} by default; laye
 option(DARKHOUSE_BUILD_TESTS "Build the CTest test programs" ON)
 if(DARKHOUSE_BUILD_TESTS)
     enable_testing()
-endif()
-if(DARKHOUSE_BUILD_TESTS AND DARKHOUSE_GUI)
-    add_executable(darkhouse_present_smoke
-        tests/present_smoke.cpp
-        src/platform_window.cpp
-        src/vulkan_context.cpp
-        src/swapchain.cpp)
-    target_include_directories(darkhouse_present_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-    target_link_libraries(darkhouse_present_smoke PRIVATE glfw Vulkan::Vulkan)
-    target_compile_definitions(darkhouse_present_smoke PRIVATE GLFW_INCLUDE_NONE ${DARKHOUSE_VK_LAYER_DEFINITION})
-    if(NOT MSVC)
-        target_compile_options(darkhouse_present_smoke PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
-        if(DARKHOUSE_WARNINGS_AS_ERRORS)
-            target_compile_options(darkhouse_present_smoke PRIVATE -Werror)
-        endif()
+
+    add_executable(darkhouse_library_model_test tests/library_model_test.cpp)
+    target_link_libraries(darkhouse_library_model_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_library_model_test)
+    add_test(NAME library_model COMMAND darkhouse_library_model_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
+    set_tests_properties(library_model PROPERTIES LABELS "catalog" TIMEOUT 60)
+
+    if(DARKHOUSE_GUI)
+        add_executable(darkhouse_present_smoke tests/present_smoke.cpp)
+        target_link_libraries(darkhouse_present_smoke PRIVATE darkhouse_gui)
+        darkhouse_apply_build_flags(darkhouse_present_smoke)
+        add_test(NAME present_smoke COMMAND darkhouse_present_smoke --frames 120 --resize)
+        set_tests_properties(present_smoke PROPERTIES SKIP_RETURN_CODE 77 LABELS "gui;vulkan" TIMEOUT 120)
     endif()
-    add_test(NAME present_smoke COMMAND darkhouse_present_smoke --frames 120 --resize)
-    set_tests_properties(present_smoke PROPERTIES SKIP_RETURN_CODE 77 LABELS "gui;vulkan" TIMEOUT 120)
 endif()
