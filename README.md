@@ -77,9 +77,13 @@ ONNX Runtime
 | `include/import_scan.hpp` | Expands files and folders into importable image paths (CLI `--import`, Import dialog, drag and drop). |
 | `include/vulkan_context.hpp` | `PixelFormat`, `GPUTexture`, `VulkanContext` (instance, device, queue, optional window surface, validation messenger, textures, uploads) and synchronization2 barrier helpers. |
 | `include/swapchain.hpp` | `Swapchain`: present mode and format selection, transparent recreation, per-frame fences and semaphores. |
-| `include/render_pipeline.hpp` | `ComputeNode`, `ExposureNode`, `RenderPipelineGraph`. |
+| `include/render_pipeline.hpp` | `ComputeNode`, `PointOperatorNode`, `ExposureNode`, `DisplayTransformNode`, `RenderPipelineGraph` (with per-node GPU timestamps). |
 | `shaders/exposure.comp` | Exposure (EV), highlights/shadows and contrast on RGBA16F storage images, in 16×16 workgroups. |
-| `include/layer_stack.hpp` | `TILE_SIZE`, FP16 tiles, `SparseRasterLayer`, `LayerNode` tree, blend modes, CPU reference compositor. |
+| `shaders/display_srgb.comp` | The view transform at the end of the develop graph: scene-linear RGBA16F to dithered sRGB RGBA8 for the viewport. |
+| `include/denoise.hpp`, `include/denoise_node.hpp` | Noise reduction: parameters, the CPU reference, and the GPU `DenoiseNode` (see [Noise reduction](#noise-reduction)). |
+| `shaders/denoise_*.comp`, `shaders/denoise_config.h` | The five denoise passes and the constants they share with the C++ code. |
+| `include/image_decoder.hpp` | `decodeImage()`: JPEG/PNG/TIFF/HDR/..., embedded RAW previews, EXIF orientation, linear-light downscale (see [Live photo preview](#live-photo-preview)). |
+| `include/layer_stack.hpp` | `TILE_SIZE`, FP16 tiles (with F16C bulk conversion), `SparseRasterLayer`, `LayerNode` tree, blend modes, CPU reference compositor. |
 | `include/ai_segmentation.hpp` | `AISegmentationEngine` (subject/sky) and the ONNX Runtime backend. |
 | `include/app_controller.hpp` | `DarkHouseApp`, `AppMode`, `AppEvent`, and the `FrontEnd` seam (with its GPU lifecycle) for the UI layer. |
 | `include/platform_window.hpp` | `PlatformWindow`: the GLFW window, surface creation, resize/drop/input tracking. |
@@ -99,12 +103,14 @@ Each frame runs these steps in order:
 1. `FrontEnd::pumpPlatformEvents` turns OS input into `AppEvent`s. The desktop
    UI polls while you interact and blocks for input when idle (below).
 2. Queued events are drained. Events are thread-safe to post from anywhere.
-3. Finished imports are collected.
+3. Finished imports are collected, and a finished photo decode replaces the
+   document (see [Live photo preview](#live-photo-preview)).
 4. If the canvas is visible (`CANVAS` / `HYBRID_SPLIT`), dirty document tiles
-   are composited, converted to FP16 and uploaded in one submission, and the
-   develop graph is re-evaluated only when something changed.
-5. `FrontEnd::drawFrame` builds the UI and presents. The develop output is
-   sampled straight from the graph's output image, in `GENERAL` layout.
+   are composited to FP16 on all cores and uploaded in one submission, and
+   the develop graph is re-evaluated only when something changed.
+5. `FrontEnd::drawFrame` builds the UI and presents. The viewport samples the
+   graph's last output (the display transform) straight from its image, in
+   `GENERAL` layout.
 6. Pacing: with vsync, presentation (FIFO) paces the loop. Without it, the loop
    sleeps to hold the target frame rate.
 
@@ -160,11 +166,11 @@ dragged out into their own OS windows, for example a second monitor.
 | Left | **Search** | Text (file name, camera, lens), minimum rating, flag, colour label, camera, ISO range, sort order. Filtering runs in memory on every keystroke. |
 | Left | **Metadata** | Rating, pick/reject and colour label (editable), camera, lens, exposure, dates, GPS and file details of the selected photo. |
 | Center | **Library** | Virtualized thumbnail grid with zoom, context menu, tooltips and keyboard culling. |
-| Center | **Viewport** | The develop graph's output texture over a transparency checkerboard. Wheel zooms around the cursor, drag pans, double-click toggles fit and 100%. |
+| Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard. Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% buttons switch zoom. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
 | Center | **Filmstrip** | The current collection as a horizontal strip, kept in sync with the grid. |
 | Right | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, blend mode, opacity, masks, add/delete/reorder. |
-| Right | **Adjustments** | Tone (exposure, contrast, highlights, shadows) runs live on the GPU and is saved to the photo's edit stack on release. White balance, presence and 8-band HSL sliders are previews until their GPU nodes exist. |
-| Floating | **Engine** | GPU, validation, swapchain and frame-timing diagnostics (View → Panels). |
+| Right | **Adjustments** | Tone (exposure, contrast, highlights, shadows) and Noise Reduction (luminance, color, detail, automatic or manual noise level) run live on the GPU and are saved to the photo's edit stack on release. White balance, presence and 8-band HSL sliders are previews until their GPU nodes exist. |
+| Floating | **Engine** | GPU, validation, swapchain and frame-timing diagnostics, and the GPU time of every develop node (View → Panels). |
 
 Keyboard (grid and filmstrip focused):
 
@@ -179,10 +185,90 @@ Keyboard (grid and filmstrip focused):
 | `Ctrl+I` | Import Photos… (or drop files and folders onto the window) |
 | `Ctrl+Q` | Quit |
 
-Thumbnails are placeholders tinted from each file's content hash until the
-decoder produces previews. Layers → Add → **Test Chart** paints a raster layer,
-so the whole pixel path can be seen working: CPU tiles, FP16 upload, the GPU
-exposure node, then the ImGui viewport.
+Grid and filmstrip thumbnails are still placeholders tinted from each file's
+content hash; the canvas shows the real photo. Layers → Add → **Test Chart**
+paints a raster layer over it.
+
+## Live photo preview
+
+Opening a photo (double-click, `Enter`, or `--open`) loads its develop stack
+at once and decodes its pixels on a worker thread, so the UI keeps drawing
+(with a spinner over the viewport) while a large file decodes:
+
+| Source | Decoded as |
+| --- | --- |
+| JPEG, PNG (8/16-bit), BMP, TGA, GIF, PSD | stb_image, sRGB → linear through lookup tables |
+| Radiance HDR | already linear |
+| TIFF | uncompressed 8/16-bit RGB(A), either byte order, or its embedded JPEG |
+| TIFF-based RAW (NEF, CR2, ARW, DNG, ORF, RW2, PEF, …), Fujifilm RAF | the largest embedded 8-bit JPEG preview (lossless sensor data is skipped; demosaicing is a later milestone) |
+| HEIF, AVIF, CR3, WebP, EXR | a clear "cannot decode yet" message in the viewport |
+
+EXIF orientation is applied. Photos larger than `--preview-size` (default
+3072 px on the long edge, `0` = full resolution) are area-averaged in linear
+light on all cores, which keeps live edits interactive. The decoded photo
+replaces the document: a `Background` raster layer at the photo's size, with
+the canvas texture and develop graph recreated to match.
+
+The develop graph ends in a **display transform** node: scene-linear RGBA16F
+in, sRGB-encoded RGBA8 out (values clipped to [0, 1], with a ±1 LSB
+triangular dither against banding). The swapchain is UNORM so that ImGui's
+sRGB-authored colours stay right, and this node is what makes the linear
+canvas display correctly on it.
+
+Getting a new photo onto the GPU is cheap because a document that is a
+single untouched raster layer skips compositing: its FP16 tiles are copied
+straight into the upload (the result is bit-identical to the compositor for
+finite pixels). Other documents composite on all cores, with float↔FP16
+conversion done by the F16C instructions when the CPU has them. For a 24 MP
+JPEG, the main-thread stall went from about 430 ms to about 15 ms at the
+default preview size, on 4 cores.
+
+## Noise reduction
+
+Adjustments → **Noise Reduction** adds a `denoise` node at the head of the
+develop stack, so it works on scene-linear light before any tone change:
+
+1. **Variance stabilisation.** A square root makes photon noise roughly
+   signal-independent, then an orthonormal opponent transform splits luma
+   (Y) from two chroma channels.
+2. **Decimated Laplacian pyramid.** Up to five detail bands, built with a
+   separable 5-tap binomial filter and a fixed-weight bilinear upsample.
+3. **Noise estimate.** A robust sigma per channel: the median absolute
+   deviation of the finest Haar diagonal coefficients, from a log-scale
+   histogram built on the GPU.
+4. **Shrinkage.** Each band is Wiener-shrunk against thresholds scaled from
+   that sigma, with per-band weights: luma keeps its coarse structure, while
+   chroma is cleaned down to coarse, blotchy scales. **Detail** keeps a share
+   of the finest luma texture as grain.
+5. Reconstruction, then back to linear RGB.
+
+Luminance, Color and Detail map onto these steps. The noise level is either
+measured on every render (shown as the per-channel sigma) or set by hand.
+
+Why it is fast on the GPU:
+
+- Five passes. The first reads the full-size input once into shared memory,
+  where it stabilises, filters and bins the noise histogram all in that one
+  pass. The full-size level 0 is never stored: the last pass recomputes it on
+  the fly.
+- Sigma and thresholds are computed on the GPU (no readback inside the frame),
+  and the sigma is read afterwards from a persistently mapped buffer for the UI.
+- With both strengths at zero the node is a plain image copy.
+
+A CPU reference (`denoiseReference`) runs the same passes with the same FP16
+storage between them. The GPU output matches it to within a mean of 1e-8,
+and on a synthetic noisy image the denoiser gains +6 dB PSNR.
+
+`darkhouse_denoise_bench` measures the node with GPU timestamps and compares it
+with the exposure node, a single full-resolution read and write, which is the
+floor for any per-pixel operator. The Engine panel shows the same per-node
+timings live. The only device measured so far is lavapipe, Mesa's CPU
+implementation of Vulkan, on 4 cores. There an 11.2 MP image denoises in
+about 450–480 ms: 3.6× one exposure pass, and about 3× faster than the
+single-threaded CPU reference. A variant that staged the coarse levels in
+shared memory for the upsampling passes was about 1.5× slower there
+(workgroup barriers are expensive on a CPU). It was not kept, because it
+could not be measured on a real GPU.
 
 ## Building
 
@@ -200,10 +286,12 @@ exposure node, then the ImGui viewport.
 | ONNX Runtime (optional) | `brew install onnxruntime` | release tarball | release zip |
 
 GLFW 3.5.1, GLM 1.0.3 and Dear ImGui v1.92.9b-docking are fetched with CMake
-`FetchContent` at configure time, pinned to those release tags. Offline builds
-can point CMake at local checkouts with `-DFETCHCONTENT_SOURCE_DIR_IMGUI=…`,
-`…_GLFW=…` and `…_GLM=…`. `-DDARKHOUSE_GUI=OFF` builds the command line only,
-with no windowing dependencies and no downloads.
+`FetchContent` at configure time, pinned to those release tags. stb
+(stb_image / stb_image_write), which has no release tags, is fetched pinned
+to a commit. Offline builds can point CMake at local checkouts with
+`-DFETCHCONTENT_SOURCE_DIR_IMGUI=…`, `…_GLFW=…`, `…_GLM=…` and `…_STB=…`.
+`-DDARKHOUSE_GUI=OFF` builds the command line only, with no windowing
+dependencies; stb is still fetched, because the engine decodes photos.
 
 On macOS the context enables `VK_KHR_portability_enumeration` and
 `VK_KHR_portability_subset` automatically, so MoltenVK is picked up without
@@ -222,7 +310,8 @@ The build produces:
 - `build/shaders/*.spv`, compiled shaders. The executable knows this path;
   override it with `--shaders` or `DARKHOUSE_SHADER_DIR`.
 - `build/generated/`: the embedded catalog schema and UI font.
-- `darkhouse_core` / `darkhouse_gui` static libraries, and the test programs.
+- `darkhouse_core` / `darkhouse_gui` static libraries, the test programs and
+  `darkhouse_denoise_bench`.
 
 Options:
 
@@ -244,8 +333,14 @@ build/bin/DarkHouse --catalog photos.sqlite --mode split --window 1920x1080
 # Batch: import a folder recursively (RAW, JPEG, TIFF, PNG, ...), then list high-ISO shots
 build/bin/DarkHouse --headless --catalog photos.sqlite --import ~/Pictures/2024 --query "m.iso >= 3200"
 
-# Batch: rate an asset, open it on the canvas and run a few frames of the GPU develop graph
-build/bin/DarkHouse --headless --catalog photos.sqlite --rate <asset-id> 4 --open <asset-id> --frames 10
+# Batch: rate an asset, open it on the canvas (decode + GPU develop graph) and exit when done
+build/bin/DarkHouse --headless --catalog photos.sqlite --rate <asset-id> 4 --open <asset-id>
+
+# Open a photo at full resolution instead of the 3072 px working preview
+build/bin/DarkHouse --catalog photos.sqlite --open <asset-id> --preview-size 0
+
+# GPU noise-reduction throughput (default 4096x2731), with the CPU reference for comparison
+build/darkhouse_denoise_bench --size 6000x4000 --iterations 10 --cpu
 
 # Catalog-only machine (no Vulkan)
 build/bin/DarkHouse --no-gpu --catalog photos.sqlite --query ""
@@ -269,10 +364,16 @@ ctest --test-dir build --output-on-failure
 | Test | Covers |
 | --- | --- |
 | `library_model` | Runs the engine headless on a temporary catalog: import, collections, folder tree, search, sorting, selection, and rating/flag/label round trips through engine events. |
+| `layer_stack` | F16C bulk conversion against the scalar code (all 65536 halves, ~1M float bit patterns), the single-layer pass-through against the full compositor on awkward pixels (NaN, −0, alpha outside [0, 1]), FP16 region writes, the parallel loop. |
+| `image_decoder` | Every supported format generated in memory, including hand-built 16-bit PNG, TIFF, RAW and RAF containers: exact linear values, all eight EXIF orientations, area-downscale weights, error messages, concurrent decodes. |
+| `photo_preview` | Opens photos through the whole app and reads back what the viewport shows: sRGB round trip within 1 LSB, a live +1 EV edit, enabling noise reduction (node order, measured noise, halved noise, saved stack), a resize with alpha, a missing file. Under core and synchronization validation. |
+| `denoise_reference` | The CPU denoiser: constants, noise estimation, exact reconstruction, PSNR gain, clean images left alone. |
+| `denoise_gpu` | GPU against CPU reference on several sizes (odd ones, one level, manual noise, bypass): same sigma, output within 1e-8 mean, +6 dB PSNR, no validation errors. |
+| `denoise_bench_smoke` | A tiny run of `darkhouse_denoise_bench`, so the benchmark keeps working. |
 | `present_smoke` | Opens a window, creates the presenting Vulkan 1.3 context and swapchain, and clears and presents 120 frames with dynamic rendering, resizing halfway. Runs with core **and synchronization** validation, and any validation error fails it. Exits 77 (skipped) without a display. |
 
-The GUI tests run headless under Xvfb with Mesa's software Vulkan driver
-(lavapipe):
+Tests that need a GPU exit 77 (skipped) without a Vulkan 1.3 device. The GUI
+tests run headless under Xvfb with Mesa's software Vulkan driver (lavapipe):
 
 ```bash
 sudo apt install xvfb mesa-vulkan-drivers vulkan-validationlayers
@@ -296,24 +397,30 @@ This is the core architecture plus the desktop shell. What works today:
   parameterized queries, ratings, flags, colour labels and edit-stack
   persistence.
 - **GPU**: device selection (discrete first), textures, staging uploads, the
-  compute-node DAG with cycle detection and barriers, and the exposure node
-  plus its shader. A presenting context with swapchain, frame
-  synchronization and a debug-utils validation messenger.
-- **Layers**: sparse FP16 tiles, dirty tracking, the layer tree with masks and
-  groups, and the CPU reference compositor for all five blend modes.
+  compute-node DAG with cycle detection, barriers and per-node timestamps,
+  and the exposure, noise-reduction and display-transform nodes. A
+  presenting context with swapchain, frame synchronization and a
+  debug-utils validation messenger.
+- **Photos**: decoding for the live preview (common formats, embedded RAW
+  previews, EXIF orientation), asynchronous and downscaled in linear light.
+- **Layers**: sparse FP16 tiles with F16C conversion, dirty tracking, the
+  layer tree with masks and groups, the CPU reference compositor for all
+  five blend modes, and parallel tile upload.
 - **App**: event-driven frame loop, three modes, graceful degradation, headless
   batch mode.
 - **Desktop UI**: docking shell with three persistent workspace layouts, the
   nine panels above, culling shortcuts, import by dialog or drag and drop,
-  live GPU exposure editing, idle-aware frame pacing, and a neutral grey theme.
+  the opened photo on the canvas with live exposure and noise-reduction
+  editing, idle-aware frame pacing, and a neutral grey theme.
 
 Next milestones:
 
-1. Display transform for the viewport. The develop output is scene-linear
-   and is shown without a view transform, so it looks darker and higher in
-   contrast than it will.
-2. RAW decoding (LibRaw): demosaic into the RGBA16F source texture and real
-   thumbnails for the grid and filmstrip. Add CR3, HEIF and RAF metadata.
+1. RAW decoding (LibRaw): demosaic sensor data into the RGBA16F source
+   texture, instead of the embedded JPEG preview, then run noise reduction on
+   the real sensor noise. Real thumbnails for the grid and filmstrip. CR3,
+   HEIF and RAF metadata.
+2. Full-resolution export: render the develop stack at full size in tiles.
+   The canvas currently edits a working preview.
 3. GPU compositing: blend modes and masks as compute nodes, with the CPU
    compositor kept as the parity reference. Adjustment, vector and
    smart-object layers render there.
@@ -328,4 +435,5 @@ Next milestones:
 | [Dear ImGui](https://github.com/ocornut/imgui) (docking) | MIT | UI toolkit, GLFW and Vulkan backends |
 | [GLFW](https://www.glfw.org/) | zlib | Windowing, input, Vulkan surfaces |
 | [GLM](https://github.com/g-truc/glm) | MIT | Vector math |
+| [stb](https://github.com/nothings/stb) (stb_image, stb_image_write) | Public domain / MIT | Photo decoding; image writing in tests |
 | [Roboto](https://fonts.google.com/specimen/Roboto) (from Dear ImGui's `misc/fonts`) | Apache 2.0 | Embedded UI font |
