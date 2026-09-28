@@ -109,7 +109,7 @@ std::string formatTimestamp(std::int64_t seconds) {
     const unsigned month = mp < 10 ? mp + 3 : mp - 9;
     const std::int64_t year = static_cast<std::int64_t>(yoe) + era * 400 + (month <= 2);
 
-    char buffer[32];
+    char buffer[96];  // sized for the full int64 range, which keeps -Wformat-truncation quiet
     std::snprintf(buffer, sizeof buffer, "%04lld-%02u-%02u %02lld:%02lld", static_cast<long long>(year), month, day,
                   static_cast<long long>(rem / 3600), static_cast<long long>(rem % 3600 / 60));
     return buffer;
