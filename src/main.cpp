@@ -66,7 +66,7 @@ void printUsage(std::ostream& out) {
            "  --models <dir>          directory containing *_segmentation.onnx models\n"
            "  --frames <n>            run exactly n frames, then exit (headless: instead of exiting when idle)\n"
            "  --headless              no window: run the queued work and exit once it drains\n"
-           "  --window <W>x<H>        initial window size (default 1600x1000)\n"
+           "  --window <W>x<H>        initial window size (default: 85% of the screen)\n"
            "  --maximized             open the window maximized\n"
            "  --no-vsync              present without waiting for the display refresh\n"
            "  --continuous            redraw every frame even when idle (benchmarks, capture)\n"
@@ -124,8 +124,8 @@ struct CommandLine {
     std::vector<std::pair<std::string, int>> ratings;
     std::optional<std::string> openAssetId;
     bool headless = false;
-    int windowWidth = 1600;
-    int windowHeight = 1000;
+    int windowWidth = 0;   // 0 = size from the monitor's work area
+    int windowHeight = 0;
     bool maximized = false;
     bool vsync = true;
     bool continuous = false;

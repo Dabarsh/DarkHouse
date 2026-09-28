@@ -2,6 +2,7 @@
 
 #include <imgui_internal.h>  // DockBuilder API, ImHashStr
 
+#include <algorithm>
 #include <initializer_list>
 
 namespace darkhouse::ui {
@@ -121,6 +122,22 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
     auto dock = [&](PanelId panel, ImGuiID node) {
         ImGui::DockBuilderDockWindow(workspace.windowNames[index(panel)].c_str(), node);
     };
+    // Side columns and the filmstrip are sized in (DPI-scaled) pixels rather
+    // than fractions: a fixed fraction is too wide on a 4K display and too
+    // cramped on a laptop. The ratio is clamped so small windows stay usable.
+    const float dpi = ImGui::GetStyle().FontScaleDpi;
+    float width = size.x;
+    float height = size.y;
+    auto splitWidth = [&](ImGuiID& node, ImGuiDir dir, float pixels, float minRatio, float maxRatio) {
+        const float ratio = std::clamp(pixels * dpi / std::max(width, 1.0f), minRatio, maxRatio);
+        width *= 1.0f - ratio;
+        return split(node, dir, ratio);
+    };
+    auto splitHeight = [&](ImGuiID& node, ImGuiDir dir, float pixels, float minRatio, float maxRatio) {
+        const float ratio = std::clamp(pixels * dpi / std::max(height, 1.0f), minRatio, maxRatio);
+        height *= 1.0f - ratio;
+        return split(node, dir, ratio);
+    };
 
     ImGuiID center = root;
     switch (workspace.mode) {
@@ -128,7 +145,7 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         // | Search      |                 |
         // | Collections |  Library grid   |
         // | Metadata    |                 |
-        ImGuiID left = split(center, ImGuiDir_Left, 0.21f);
+        ImGuiID left = splitWidth(center, ImGuiDir_Left, 320.0f, 0.16f, 0.30f);
         const ImGuiID metadata = split(left, ImGuiDir_Down, 0.42f);
         const ImGuiID search = split(left, ImGuiDir_Up, 0.52f);
         dock(PanelId::SEARCH, search);
@@ -141,11 +158,11 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         // | Collections |  Viewport       | Layers      |
         // | Metadata    |-----------------|             |
         // |             |  Filmstrip      | Adjustments |
-        ImGuiID right = split(center, ImGuiDir_Right, 0.24f);
+        ImGuiID right = splitWidth(center, ImGuiDir_Right, 360.0f, 0.18f, 0.30f);
         const ImGuiID adjustments = split(right, ImGuiDir_Down, 0.55f);
-        ImGuiID left = split(center, ImGuiDir_Left, 0.19f);
+        ImGuiID left = splitWidth(center, ImGuiDir_Left, 300.0f, 0.15f, 0.28f);
         const ImGuiID metadata = split(left, ImGuiDir_Down, 0.50f);
-        const ImGuiID filmstrip = split(center, ImGuiDir_Down, 0.20f);
+        const ImGuiID filmstrip = splitHeight(center, ImGuiDir_Down, 150.0f, 0.12f, 0.28f);
         dock(PanelId::COLLECTIONS, left);
         dock(PanelId::SEARCH, left);
         dock(PanelId::METADATA, metadata);
@@ -159,11 +176,11 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         // | Collections | Library | Viewport | Layers      |
         // | Metadata    |------------------- |             |
         // |             |      Filmstrip     | Adjustments |
-        ImGuiID right = split(center, ImGuiDir_Right, 0.22f);
+        ImGuiID right = splitWidth(center, ImGuiDir_Right, 340.0f, 0.17f, 0.28f);
         const ImGuiID adjustments = split(right, ImGuiDir_Down, 0.55f);
-        ImGuiID left = split(center, ImGuiDir_Left, 0.18f);
+        ImGuiID left = splitWidth(center, ImGuiDir_Left, 280.0f, 0.14f, 0.26f);
         const ImGuiID metadata = split(left, ImGuiDir_Down, 0.50f);
-        const ImGuiID filmstrip = split(center, ImGuiDir_Down, 0.20f);
+        const ImGuiID filmstrip = splitHeight(center, ImGuiDir_Down, 150.0f, 0.12f, 0.28f);
         const ImGuiID grid = split(center, ImGuiDir_Left, 0.42f);
         dock(PanelId::COLLECTIONS, left);
         dock(PanelId::SEARCH, left);

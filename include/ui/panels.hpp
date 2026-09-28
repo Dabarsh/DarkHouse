@@ -51,6 +51,7 @@ public:
     LibraryGridPanel() noexcept : Panel(PanelId::ASSET_GRID) {}
     void draw(PanelContext& ctx) override;
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
+    [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
 };
 
 // The developed canvas (the develop graph's output texture), with zoom and pan.
@@ -59,6 +60,7 @@ public:
     ViewportPanel() noexcept : Panel(PanelId::VIEWPORT) {}
     void draw(PanelContext& ctx) override;
     [[nodiscard]] bool fullBleed() const noexcept override { return true; }
+    [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override {
         return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     }
@@ -74,6 +76,7 @@ public:
     FilmstripPanel() noexcept : Panel(PanelId::FILMSTRIP) {}
     void draw(PanelContext& ctx) override;
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
+    [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
 };
 
 // Unified layer stack: parametric, raster, vector, smart-object and group

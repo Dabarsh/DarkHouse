@@ -73,6 +73,9 @@ public:
     [[nodiscard]] virtual ImGuiWindowFlags windowFlags() const noexcept { return ImGuiWindowFlags_None; }
     // Edge-to-edge content (image views): the shell removes window padding.
     [[nodiscard]] virtual bool fullBleed() const noexcept { return false; }
+    // Views that carry their own toolbar hide the dock tab bar while they are
+    // alone in their dock node (it returns as soon as another panel joins).
+    [[nodiscard]] virtual bool autoHideTabBar() const noexcept { return false; }
 
 private:
     PanelId id_;

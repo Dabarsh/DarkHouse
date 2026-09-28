@@ -255,6 +255,11 @@ void DarkHouseShell::drawPanels(PanelContext& ctx) {
         Panel& panel = *panels_[index(id)];
         // Panels outside the default layout open as floating windows of a sensible size.
         ImGui::SetNextWindowSize(ImVec2(420.0f, 320.0f), ImGuiCond_FirstUseEver);
+        if (panel.autoHideTabBar()) {
+            ImGuiWindowClass windowClass;
+            windowClass.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_AutoHideTabBar;
+            ImGui::SetNextWindowClass(&windowClass);
+        }
         if (panel.fullBleed()) ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         const bool visible = ImGui::Begin(layout_.windowName(mode, id), open, panel.windowFlags());
         if (panel.fullBleed()) ImGui::PopStyleVar();

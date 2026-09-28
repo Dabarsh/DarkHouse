@@ -8,15 +8,61 @@
 #include "vulkan_utils.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace darkhouse {
 namespace {
 
 int g_glfwUsers = 0;  // GLFW is initialized while at least one window exists (main thread only)
+
+constexpr int kMinWidth = 640;
+constexpr int kMinHeight = 400;
+
+// The DarkHouse icon, drawn procedurally: a safelight glowing on a dark
+// rounded tile. Wayland and macOS take icons from the desktop entry / app
+// bundle instead, and GLFW reports an error there, so it is skipped.
+void setIcon(GLFWwindow* window) {
+    const int platform = glfwGetPlatform();
+    if (platform == GLFW_PLATFORM_WAYLAND || platform == GLFW_PLATFORM_COCOA) return;
+
+    constexpr std::array<int, 4> kSizes{16, 32, 48, 64};
+    std::array<std::vector<unsigned char>, kSizes.size()> pixels;
+    std::array<GLFWimage, kSizes.size()> images{};
+    for (std::size_t i = 0; i < kSizes.size(); ++i) {
+        const int size = kSizes[i];
+        pixels[i].resize(static_cast<std::size_t>(size) * size * 4);
+        const float half = static_cast<float>(size) * 0.5f;
+        const float corner = static_cast<float>(size) * 0.22f;
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                const float px = static_cast<float>(x) + 0.5f - half;
+                const float py = static_cast<float>(y) + 0.5f - half;
+                // Rounded-square coverage (signed distance, 1 px anti-aliasing).
+                const float qx = std::max(std::fabs(px) - (half - corner), 0.0f);
+                const float qy = std::max(std::fabs(py) - (half - corner), 0.0f);
+                const float tile = std::clamp(corner - std::sqrt(qx * qx + qy * qy) + 0.5f, 0.0f, 1.0f);
+                // Safelight: bright core with a soft glow.
+                const float r = std::sqrt(px * px + py * py) / half;
+                const float core = std::clamp((0.42f - r) * static_cast<float>(size) * 0.25f, 0.0f, 1.0f);
+                const float glow = std::clamp(1.0f - r / 0.85f, 0.0f, 1.0f) * 0.55f;
+                const float light = std::max(core, glow * glow);
+                unsigned char* p = &pixels[i][(static_cast<std::size_t>(y) * size + x) * 4];
+                p[0] = static_cast<unsigned char>(28 + (227 - 28) * light);
+                p[1] = static_cast<unsigned char>(28 + (84 - 28) * light);
+                p[2] = static_cast<unsigned char>(30 + (61 - 30) * light);
+                p[3] = static_cast<unsigned char>(255.0f * tile);
+            }
+        }
+        images[i] = GLFWimage{size, size, pixels[i].data()};
+    }
+    glfwSetWindowIcon(window, static_cast<int>(images.size()), images.data());
+}
 
 void onGlfwError(int code, const char* description) {
     std::clog << "[DarkHouse] warn: GLFW error " << code << ": " << (description ? description : "?") << '\n';
@@ -52,15 +98,22 @@ void releaseGlfw() noexcept {
 PlatformWindow::PlatformWindow(const WindowOptions& options) {
     acquireGlfw();
 
-    int width = std::max(options.width, 320);
-    int height = std::max(options.height, 240);
     int workX = 0, workY = 0, workW = 0, workH = 0;
-    if (GLFWmonitor* monitor = glfwGetPrimaryMonitor()) {
-        glfwGetMonitorWorkarea(monitor, &workX, &workY, &workW, &workH);
-        if (workW > 0 && workH > 0) {
-            width = std::min(width, workW);
-            height = std::min(height, workH);
-        }
+    if (GLFWmonitor* monitor = glfwGetPrimaryMonitor()) glfwGetMonitorWorkarea(monitor, &workX, &workY, &workW, &workH);
+    const bool haveWorkArea = workW > 0 && workH > 0;
+    int width = options.width;
+    int height = options.height;
+    if (width <= 0 || height <= 0) {
+        // Automatic: most of the screen, which is what an editor wants,
+        // without covering it entirely the way maximized would.
+        width = haveWorkArea ? std::max(workW * 85 / 100, std::min(1280, workW)) : 1600;
+        height = haveWorkArea ? std::max(workH * 85 / 100, std::min(800, workH)) : 1000;
+    }
+    width = std::max(width, kMinWidth);
+    height = std::max(height, kMinHeight);
+    if (haveWorkArea) {
+        width = std::min(width, workW);
+        height = std::min(height, workH);
     }
 
     glfwDefaultWindowHints();
@@ -80,7 +133,8 @@ PlatformWindow::PlatformWindow(const WindowOptions& options) {
         glfwGetWindowSize(window_, &actualW, &actualH);
         glfwSetWindowPos(window_, workX + (workW - actualW) / 2, workY + (workH - actualH) / 2);
     }
-    glfwSetWindowSizeLimits(window_, 640, 400, GLFW_DONT_CARE, GLFW_DONT_CARE);
+    glfwSetWindowSizeLimits(window_, kMinWidth, kMinHeight, GLFW_DONT_CARE, GLFW_DONT_CARE);
+    setIcon(window_);
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, &PlatformWindow::onFramebufferSize);
     glfwSetDropCallback(window_, &PlatformWindow::onDrop);

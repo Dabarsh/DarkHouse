@@ -17,8 +17,10 @@ namespace darkhouse {
 
 struct WindowOptions {
     std::string title = "DarkHouse";
-    int width = 1600;   // screen coordinates; clamped to the primary monitor's work area
-    int height = 1000;
+    // Screen coordinates, clamped to the primary monitor's work area.
+    // 0 = automatic: 85% of the work area, at least 1280x800 where it fits.
+    int width = 0;
+    int height = 0;
     bool maximized = false;
     bool visible = true;  // false: create hidden and call show() once the first frame is ready
 };
