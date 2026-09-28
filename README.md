@@ -177,7 +177,7 @@ dragged out into their own OS windows, for example a second monitor.
 | Center | **Library** | Virtualized thumbnail grid with zoom, context menu, tooltips and keyboard culling. |
 | Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard (every workspace but Catalog). Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% buttons switch zoom. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
 | Center | **Filmstrip** | The current collection as a horizontal strip, kept in sync with the grid. |
-| Develop | **Adjustments** | White balance (temperature in kelvin, tint), tone (exposure, contrast, highlights, shadows), presence (vibrance, saturation), point tone curves (composite RGB and per channel, monotone spline, presets), the 8-band colour mixer (hue, saturation, luminance), 3-way colour grading wheels with blending and balance, and noise reduction. Every control runs live on the GPU develop graph and is saved to the photo's edit stack on release. |
+| Develop | **Adjustments** | White balance (temperature in kelvin, tint), tone (exposure, contrast, highlights, shadows), presence (vibrance, saturation), point tone curves (composite RGB and per channel, monotone spline, presets), the 8-band colour mixer (hue, saturation, luminance), 3-way colour grading wheels with blending and balance, noise reduction, and lens corrections (a lensfun lens profile matched to the photo's lens, with distortion / vignetting amounts and chromatic aberration removal, plus manual distortion, vignetting, fringe, scale and constrain crop). Every control runs live on the GPU develop graph and is saved to the photo's edit stack on release. |
 | Develop, Canvas | **Masking** | Local adjustments: a stack of masks built from brush, linear and radial gradient, luminance and colour range components (and Subject / Sky placeholders), each added, subtracted or intersected, inverted and faded; brush size, feather, flow and erase; the edits each mask applies. The viewport paints and drags the selected component and shows the selected mask as a red overlay. |
 | Canvas | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, the selected layer's blend mode and opacity, add/delete/reorder. |
 | Canvas | **Properties** | The selected layer: name, layer mask (add, enable, remove, or make from a Masking panel mask) and its content. |
@@ -362,7 +362,10 @@ UI options: `--window WxH`, `--maximized`, `--no-vsync`, `--continuous`,
 DarkHouse logs a warning and runs headless, so batch work still completes.
 
 Put `subject_segmentation.onnx` / `sky_segmentation.onnx` in a directory and
-pass `--models <dir>` to enable AI selection. Run `DarkHouse --help` for every
+pass `--models <dir>` to enable AI selection. Lens profile corrections read a
+[lensfun](https://lensfun.github.io/) database: install the lensfun data package
+(`liblensfun-data-v1` on Debian/Ubuntu, `lensfun` elsewhere), set
+`DARKHOUSE_LENSFUN_DIR`, or pass `--lens-db <dir>`. Run `DarkHouse --help` for every
 option. Exit codes: `0` success, `1` fatal error, `2` some imports failed,
 `64` bad arguments.
 

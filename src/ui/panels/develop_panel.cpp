@@ -18,6 +18,7 @@ void AdjustmentsPanel::draw(PanelContext& ctx) {
     if (ImGui::CollapsingHeader("Color Mixer (HSL)", ImGuiTreeNodeFlags_DefaultOpen)) mixer_.draw(ctx);
     if (ImGui::CollapsingHeader("Color Grading", ImGuiTreeNodeFlags_DefaultOpen)) grading_.draw(ctx);
     if (ImGui::CollapsingHeader("Detail", ImGuiTreeNodeFlags_DefaultOpen)) detail_.draw(ctx);
+    if (ImGui::CollapsingHeader("Lens Corrections", ImGuiTreeNodeFlags_DefaultOpen)) lens_.draw(ctx);
 
     ImGui::Spacing();
     ImGui::PushTextWrapPos();

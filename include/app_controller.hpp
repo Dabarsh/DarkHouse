@@ -55,6 +55,7 @@ struct AppConfig {
     std::filesystem::path catalogPath = "darkhouse_catalog.sqlite";
     std::filesystem::path shaderDirectory = "shaders";  // compiled *.spv
     std::filesystem::path modelDirectory;               // subject_segmentation.onnx / sky_segmentation.onnx
+    std::filesystem::path lensDatabaseDirectory;        // lensfun XML files; empty = search (lens_database.hpp)
     AppMode initialMode = AppMode::CATALOG;
     std::uint32_t canvasWidth = 2048;  // the empty document before a photo is opened
     std::uint32_t canvasHeight = 2048;

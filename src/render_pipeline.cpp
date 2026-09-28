@@ -2,6 +2,7 @@
 
 #include "color_nodes.hpp"
 #include "denoise_node.hpp"
+#include "lens_correction.hpp"
 #include "local_adjust_node.hpp"
 #include "vulkan_utils.hpp"
 
@@ -244,6 +245,7 @@ std::unique_ptr<ComputeNode> createComputeNode(std::string_view nodeType, const 
     if (nodeType == HslNode::kTypeName) return std::make_unique<HslNode>(context, shaderDirectory);
     if (nodeType == ColorGradingNode::kTypeName) return std::make_unique<ColorGradingNode>(context, shaderDirectory);
     if (nodeType == ToneCurveNode::kTypeName) return std::make_unique<ToneCurveNode>(context, shaderDirectory);
+    if (nodeType == LensCorrectionNode::kTypeName) return std::make_unique<LensCorrectionNode>(context, shaderDirectory);
     if (nodeType == LocalAdjustNode::kTypeName) return std::make_unique<LocalAdjustNode>(context, shaderDirectory);
     throw std::invalid_argument("unknown compute node type '" + std::string(nodeType) + "'");
 }

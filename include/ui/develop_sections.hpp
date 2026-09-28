@@ -10,6 +10,8 @@
 #include "color_adjust.hpp"
 #include "denoise.hpp"
 #include "develop_stack.hpp"
+#include "lens_correction.hpp"
+#include "lens_database.hpp"
 #include "render_pipeline.hpp"
 #include "tone_curve.hpp"
 #include "ui/panel.hpp"
@@ -19,6 +21,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <future>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -112,6 +116,23 @@ public:
 
 private:
     NodeBinding<ColorGradingParams> grading_{"color_grading"};
+};
+
+// Lens corrections: lens profile (from a lensfun database, matched to the
+// photo's lens) with distortion / vignetting amounts and chromatic
+// aberration removal, and manual distortion, vignetting, fringe and scale.
+class LensCorrectionSection {
+public:
+    void draw(PanelContext& ctx);
+
+private:
+    void drawProfile(PanelContext& ctx, LensCorrectionParams& lens, SliderResult& result);
+
+    NodeBinding<LensCorrectionParams> lens_{"lens_correction"};
+    // The database loads on a worker thread the first time the section draws.
+    std::shared_future<std::shared_ptr<const LensDatabase>> database_;
+    bool searched_ = false;
+    std::optional<std::filesystem::path> directory_;
 };
 
 // Noise reduction (the denoise node is enabled explicitly).

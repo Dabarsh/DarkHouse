@@ -227,7 +227,7 @@ SliderResult adjustmentSlider(const char* label, float& value, float min, float 
     // Wide enough for the longest adjustment label, so columns line up.
     const float labelWidth = ImGui::CalcTextSize("Temperature").x + ImGui::GetStyle().ItemSpacing.x * 2.0f;
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(label, ImGui::FindRenderedTextEnd(label));  // "Name##id" shows "Name"
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Double-click to reset");
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && value != defaultValue) {

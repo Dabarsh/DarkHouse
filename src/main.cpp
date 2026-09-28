@@ -66,6 +66,8 @@ void printUsage(std::ostream& out) {
            "                          downscaled for interactive editing (default 3072, 0 = full size)\n"
            "  --shaders <dir>         directory containing compiled *.spv shaders\n"
            "  --models <dir>          directory containing *_segmentation.onnx models\n"
+           "  --lens-db <dir>         lensfun lens database (*.xml) for lens profile corrections\n"
+           "                          (default: $DARKHOUSE_LENSFUN_DIR, then /usr/share/lensfun/version_1)\n"
            "  --frames <n>            run exactly n frames, then exit (headless: instead of exiting when idle)\n"
            "  --headless              no window: run the queued work and exit once it drains\n"
            "  --window <W>x<H>        initial window size (default: 85% of the screen)\n"
@@ -219,6 +221,10 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
             const auto v = value();
             if (!v) return fail("--models needs a directory");
             cli.config.modelDirectory = *v;
+        } else if (arg == "--lens-db") {
+            const auto v = value();
+            if (!v) return fail("--lens-db needs a directory");
+            cli.config.lensDatabaseDirectory = *v;
         } else if (arg == "--frames") {
             const auto v = value();
             char* end = nullptr;

@@ -111,7 +111,8 @@ public:
 };
 
 // Develop adjustments: white balance, tone, presence, tone curve, colour
-// mixer, colour grading and noise reduction, all live on the GPU develop graph.
+// mixer, colour grading, noise reduction and lens corrections, all live on
+// the GPU develop graph.
 class AdjustmentsPanel final : public Panel {
 public:
     AdjustmentsPanel() noexcept : Panel(PanelId::ADJUSTMENTS) {}
@@ -123,6 +124,7 @@ private:
     ColorMixerSection mixer_;
     ColorGradingSection grading_;
     DetailSection detail_;
+    LensCorrectionSection lens_;
 };
 
 // Local adjustments: the photo's mask stack (brush, gradients, ranges and the

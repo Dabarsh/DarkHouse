@@ -57,6 +57,7 @@ set(DARKHOUSE_SHADER_SOURCES
     shaders/hsl_adjust.comp
     shaders/color_grading.comp
     shaders/tone_curve.comp
+    shaders/lens_correction.comp
     shaders/mask_generate.comp
     shaders/local_adjust.comp
     shaders/denoise_down0.comp
@@ -187,6 +188,8 @@ add_library(darkhouse_core STATIC
     src/color_adjust.cpp
     src/color_nodes.cpp
     src/tone_curve.cpp
+    src/lens_database.cpp
+    src/lens_correction.cpp
     src/develop_stack.cpp
     src/mask_engine.cpp
     src/local_adjust_node.cpp
@@ -207,6 +210,8 @@ add_library(darkhouse_core STATIC
     include/color_adjust.hpp
     include/color_nodes.hpp
     include/tone_curve.hpp
+    include/lens_database.hpp
+    include/lens_correction.hpp
     include/develop_stack.hpp
     include/mask_engine.hpp
     include/local_adjust_node.hpp
@@ -344,6 +349,12 @@ if(DARKHOUSE_BUILD_TESTS)
     darkhouse_apply_build_flags(darkhouse_color_adjust_test)
     add_test(NAME color_adjust COMMAND darkhouse_color_adjust_test)
     set_tests_properties(color_adjust PROPERTIES LABELS "color" TIMEOUT 60)
+
+    add_executable(darkhouse_lens_correction_test tests/lens_correction_test.cpp)
+    target_link_libraries(darkhouse_lens_correction_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_lens_correction_test)
+    add_test(NAME lens_correction COMMAND darkhouse_lens_correction_test)
+    set_tests_properties(lens_correction PROPERTIES LABELS "color" TIMEOUT 60)
 
     add_executable(darkhouse_color_gpu_test tests/color_gpu_test.cpp)
     target_link_libraries(darkhouse_color_gpu_test PRIVATE darkhouse_core)

@@ -1,6 +1,6 @@
 // GPU colour nodes against their CPU references (color_adjust.hpp,
-// tone_curve.hpp): white balance, HSL colour mixer, colour grading and tone
-// curves, on an image that sweeps hue,
+// tone_curve.hpp, lens_correction.hpp): white balance, HSL colour mixer,
+// colour grading, tone curves and lens corrections, on an image that sweeps hue,
 // chroma and lightness and includes greys, black and HDR values. Runs under
 // validation; any validation error fails it.
 //
@@ -9,6 +9,7 @@
 #include "color_adjust.hpp"
 #include "color_nodes.hpp"
 #include "layer_stack.hpp"
+#include "lens_correction.hpp"
 #include "render_pipeline.hpp"
 
 #include <cmath>
@@ -111,6 +112,20 @@ void compare(const char* name, const std::vector<float>& gpu, const std::vector<
     }
     std::printf("  %-34s mean |gpu-cpu| %.2e, worst %.2e, outliers %zu\n", name, sum / double(input.size()), worst,
                 outliers);
+    CHECK(outliers == 0);
+}
+
+// Whole-image comparison for resampling nodes: every channel, alpha included.
+void compareImages(const char* name, const std::vector<float>& gpu, const std::vector<float>& cpu) {
+    std::size_t outliers = 0;
+    double worst = 0.0, sum = 0.0;
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        const double diff = std::fabs(double(gpu[i]) - cpu[i]);
+        worst = std::max(worst, diff);
+        sum += diff;
+        if (diff > 3e-3 * std::fabs(cpu[i]) + 5e-4) ++outliers;
+    }
+    std::printf("  %-34s mean |gpu-cpu| %.2e, worst %.2e, outliers %zu\n", name, sum / double(cpu.size()), worst, outliers);
     CHECK(outliers == 0);
 }
 
@@ -221,6 +236,40 @@ int main() {
             compare("re-evaluated after an edit", result, image, [&](const Rgb& c) { return applyToneCurve(tables, c); });
             graph.clear();
             gpu->destroyTexture(source);
+        }
+
+        std::printf("lens correction\n");
+        LensCorrectionParams profileOnly;
+        ResolvedLensProfile profile;
+        profile.name = "test profile";
+        profile.distortionModel = DistortionModel::PTLENS;
+        profile.distortion = {0.01f, -0.06f, 0.02f};
+        profile.tcaModel = TcaModel::POLY3;
+        profile.tcaRed = {1.002f, 0.0f, 0.001f};
+        profile.tcaBlue = {0.998f, 0.0f, -0.001f};
+        profile.hasVignetting = true;
+        profile.vignetting = {-0.6f, 0.2f, -0.05f};
+        applyProfile(profileOnly, profile);
+        LensCorrectionParams everything = profileOnly;
+        everything.distortionAmount = 150.0f;
+        everything.manualDistortion = -30.0f;
+        everything.manualVignetting = 40.0f;
+        everything.manualCaRed = 60.0f;
+        everything.manualCaBlue = -60.0f;
+        everything.scale = 90.0f;  // zoomed out: clamped edges get sampled
+        LensCorrectionParams poly5;
+        profile.distortionModel = DistortionModel::POLY5;
+        profile.distortion = {0.03f, -0.01f, 0.0f};
+        profile.tcaModel = TcaModel::LINEAR;
+        applyProfile(poly5, profile);
+        const std::pair<const char*, LensCorrectionParams> lensCases[] = {
+            {"identity", LensCorrectionParams{}}, {"profile (ptlens, poly3 TCA, pa)", profileOnly},
+            {"profile + manual, scale 90 %", everything}, {"poly5 + linear TCA", poly5}};
+        for (const auto& [name, p] : lensCases) {
+            auto node = std::make_unique<LensCorrectionNode>(*gpu, DARKHOUSE_SHADER_DIR);
+            node->setParams(p);
+            const std::vector<float> result = runNode(*gpu, std::move(node), image);
+            compareImages(name, result, applyLensCorrection(lensCorrectionPush(p, kWidth, kHeight), kWidth, kHeight, image));
         }
     } catch (const std::exception& e) {
         std::cout << "FAIL: " << e.what() << '\n';

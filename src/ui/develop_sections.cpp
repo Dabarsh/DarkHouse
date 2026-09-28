@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <span>
 #include <utility>
@@ -141,6 +142,145 @@ void ToneCurveSection::draw(PanelContext& ctx) {
     ImGui::SameLine();
     ImGui::TextDisabled("%u point%s", std::max(curve.count, 2u), std::max(curve.count, 2u) == 1 ? "" : "s");
     curves_.commit(ctx, result);
+}
+
+// -----------------------------------------------------------------------------
+// Lens corrections
+// -----------------------------------------------------------------------------
+
+void LensCorrectionSection::draw(PanelContext& ctx) {
+    lens_.sync(ctx.app);
+    LensCorrectionParams& lens = lens_.values();
+    SliderResult result;
+
+    if (sectionHeader("Profile")) {
+        const LensCorrectionParams defaults;
+        lens.profileEnabled = 0;
+        lens.distortionAmount = defaults.distortionAmount;
+        lens.vignettingAmount = defaults.vignettingAmount;
+        lens.removeChromaticAberration = defaults.removeChromaticAberration;
+        result.changed = result.released = true;
+    }
+    drawProfile(ctx, lens, result);
+
+    if (sectionHeader("Manual")) {
+        const LensCorrectionParams defaults;
+        lens.manualDistortion = defaults.manualDistortion;
+        lens.manualVignetting = defaults.manualVignetting;
+        lens.manualVignettingMidpoint = defaults.manualVignettingMidpoint;
+        lens.manualCaRed = defaults.manualCaRed;
+        lens.manualCaBlue = defaults.manualCaBlue;
+        lens.constrainCrop = defaults.constrainCrop;
+        lens.scale = defaults.scale;
+        result.changed = result.released = true;
+    }
+    result |= adjustmentSlider("Distortion", lens.manualDistortion, -100.0f, 100.0f, 0.0f, "%+.0f");
+    ImGui::SetItemTooltip("Positive removes barrel distortion, negative removes pincushion");
+    result |= adjustmentSlider("Vignetting", lens.manualVignetting, -100.0f, 100.0f, 0.0f, "%+.0f",
+                               IM_COL32(40, 40, 40, 255), IM_COL32(230, 230, 230, 255));
+    ImGui::SetItemTooltip("Positive brightens the corners, negative darkens them");
+    ImGui::BeginDisabled(lens.manualVignetting == 0.0f);
+    result |= adjustmentSlider("Midpoint", lens.manualVignettingMidpoint, 0.0f, 100.0f, 50.0f, "%.0f");
+    ImGui::EndDisabled();
+    result |= adjustmentSlider("Red / Cyan", lens.manualCaRed, -100.0f, 100.0f, 0.0f, "%+.0f", IM_COL32(60, 200, 210, 255),
+                               IM_COL32(220, 60, 60, 255));
+    result |= adjustmentSlider("Blue / Yellow", lens.manualCaBlue, -100.0f, 100.0f, 0.0f, "%+.0f",
+                               IM_COL32(220, 200, 60, 255), IM_COL32(70, 110, 230, 255));
+    result |= adjustmentSlider("Scale", lens.scale, 50.0f, 150.0f, 100.0f, "%.0f %%");
+    bool constrain = lens.constrainCrop != 0;
+    if (ImGui::Checkbox("Constrain Crop", &constrain)) {
+        lens.constrainCrop = constrain ? 1u : 0u;
+        result.changed = result.released = true;
+    }
+    ImGui::SetItemTooltip("Zoom in just enough that corrected edges never show past the photo");
+    lens_.commit(ctx, result);
+}
+
+void LensCorrectionSection::drawProfile(PanelContext& ctx, LensCorrectionParams& lens, SliderResult& result) {
+    if (!searched_) {
+        searched_ = true;
+        directory_ = LensDatabase::findDirectory(ctx.app.config().lensDatabaseDirectory);
+        if (directory_) {
+            database_ = std::async(std::launch::async, [dir = *directory_] {
+                            return std::shared_ptr<const LensDatabase>(std::make_shared<LensDatabase>(LensDatabase::loadDirectory(dir)));
+                        }).share();
+        }
+    }
+    const LensDatabase* database = nullptr;
+    if (database_.valid() && database_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        database = database_.get().get();
+    }
+
+    // The photo's lens.
+    const AssetRecord* asset = ctx.library.findAsset(ctx.app.activeAssetId());
+    const AssetMetadata* meta = asset ? &asset->metadata : nullptr;
+    const std::string lensName = meta && meta->lens ? *meta->lens : std::string();
+    const float focal = meta && meta->focalLength ? static_cast<float>(*meta->focalLength) : 0.0f;
+    const float aperture = meta && meta->aperture ? static_cast<float>(*meta->aperture) : 0.0f;
+    ImGui::TextDisabled("Lens");
+    ImGui::SameLine();
+    if (lensName.empty()) {
+        ImGui::TextUnformatted(asset ? "not recorded in the photo" : "no photo open");
+    } else {
+        ImGui::TextWrapped("%s  (%.0f mm, f/%.1f)", lensName.c_str(), focal, aperture);
+    }
+
+    const LensProfile* match = nullptr;
+    if (!directory_) {
+        ImGui::PushTextWrapPos();
+        ImGui::TextDisabled("No lens database found. Install the lensfun data (lensfun-data / liblensfun-data-v1) or "
+                           "start with --lens-db <dir>.");
+        ImGui::PopTextWrapPos();
+    } else if (!database) {
+        ImGui::TextDisabled("Loading lens profiles...");
+    } else {
+        match = lensName.empty() ? nullptr : database->findLens(lensName, meta && meta->cameraMake ? *meta->cameraMake : "");
+        ImGui::TextDisabled("Profile");
+        ImGui::SameLine();
+        if (match) {
+            ImGui::TextWrapped("%s", match->name().c_str());
+        } else {
+            ImGui::TextUnformatted("none for this lens");
+        }
+        ImGui::SetItemTooltip("%zu lenses, %zu cameras from %s", database->lenses().size(), database->cameras().size(),
+                              database->directory().string().c_str());
+    }
+
+    // Enabling resolves the matched profile for the photo's focal length and
+    // aperture; the coefficients are saved with the edit.
+    bool enabled = lens.profileEnabled != 0;
+    ImGui::BeginDisabled(!enabled && !match);
+    if (ImGui::Checkbox("Enable Profile Corrections", &enabled)) {
+        if (enabled && match) {
+            float crop = 0.0f;
+            if (meta && meta->cameraModel) {
+                if (const CameraProfile* camera = database->findCamera(meta->cameraMake.value_or(""), *meta->cameraModel)) {
+                    crop = camera->cropFactor;
+                }
+            }
+            applyProfile(lens, resolveLensProfile(*match, focal, aperture, crop));
+        } else {
+            lens.profileEnabled = 0;
+        }
+        result.changed = result.released = true;
+    }
+    ImGui::EndDisabled();
+    if (lens.profileEnabled) {
+        ImGui::TextDisabled("Applied: %s", lens.profileName);
+        ImGui::BeginDisabled(lens.distortionModel == DistortionModel::NONE);
+        result |= adjustmentSlider("Distortion##profile", lens.distortionAmount, 0.0f, 200.0f, 100.0f, "%.0f");
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(!lens.hasVignetting);
+        result |= adjustmentSlider("Vignetting##profile", lens.vignettingAmount, 0.0f, 200.0f, 100.0f, "%.0f");
+        ImGui::EndDisabled();
+        bool removeCa = lens.removeChromaticAberration != 0;
+        ImGui::BeginDisabled(lens.tcaModel == TcaModel::NONE);
+        if (ImGui::Checkbox("Remove Chromatic Aberration", &removeCa)) {
+            lens.removeChromaticAberration = removeCa ? 1u : 0u;
+            result.changed = result.released = true;
+        }
+        ImGui::EndDisabled();
+    }
 }
 
 // -----------------------------------------------------------------------------

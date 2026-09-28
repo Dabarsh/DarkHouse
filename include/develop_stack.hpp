@@ -5,6 +5,8 @@
 // does it:
 //
 //   denoise          sensor noise, on scene-linear data straight from the source
+//   lens_correction  distortion, chromatic aberration and vignetting, before
+//                    anything that looks at where a pixel is
 //   white_balance    chromatic adaptation before any tone change
 //   exposure         exposure, highlights / shadows, contrast
 //   tone_curve       point curves (composite and per channel)
