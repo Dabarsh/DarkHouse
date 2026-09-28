@@ -56,6 +56,9 @@ public:
     [[nodiscard]] bool consumeFramebufferResized() noexcept;
     // Files and folders dropped onto the window since the last call (UTF-8 paths).
     [[nodiscard]] std::vector<std::string> takeDroppedPaths();
+    // Number of input events (keys, text, mouse, scroll, focus, drops,
+    // resizes) received so far. Frame pacing uses it to tell idle from busy.
+    [[nodiscard]] std::uint64_t inputEventCount() const noexcept { return inputEvents_; }
 
     // Event pumping. Must be called from the main thread.
     static void pollEvents();
@@ -66,10 +69,12 @@ public:
 private:
     static void onFramebufferSize(GLFWwindow* window, int width, int height);
     static void onDrop(GLFWwindow* window, int count, const char** paths);
+    static void countInput(GLFWwindow* window) noexcept;
 
     GLFWwindow* window_ = nullptr;
     bool framebufferResized_ = false;
     std::vector<std::string> droppedPaths_;
+    std::uint64_t inputEvents_ = 0;
 };
 
 }  // namespace darkhouse

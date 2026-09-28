@@ -69,6 +69,7 @@ void printUsage(std::ostream& out) {
            "  --window <W>x<H>        initial window size (default 1600x1000)\n"
            "  --maximized             open the window maximized\n"
            "  --no-vsync              present without waiting for the display refresh\n"
+           "  --continuous            redraw every frame even when idle (benchmarks, capture)\n"
            "  --viewports             allow dragging panels out into their own OS windows\n"
            "  --layout <file>         UI layout file (default: <user config dir>/DarkHouse/layout.ini)\n"
            "  --no-gpu                skip Vulkan initialization (implies --headless)\n"
@@ -127,6 +128,7 @@ struct CommandLine {
     int windowHeight = 1000;
     bool maximized = false;
     bool vsync = true;
+    bool continuous = false;
     bool multiViewport = false;
     std::optional<std::filesystem::path> layoutFile;
     bool help = false;
@@ -229,6 +231,8 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
             cli.maximized = true;
         } else if (arg == "--no-vsync") {
             cli.vsync = false;
+        } else if (arg == "--continuous") {
+            cli.continuous = true;
         } else if (arg == "--viewports") {
             cli.multiViewport = true;
         } else if (arg == "--layout") {
@@ -267,6 +271,7 @@ std::unique_ptr<FrontEnd> createDesktopFrontEnd(const CommandLine& cli) {
         options.window.height = cli.windowHeight;
         options.window.maximized = cli.maximized;
         options.vsync = cli.vsync;
+        options.lowPowerIdle = !cli.continuous;
         options.multiViewport = cli.multiViewport;
         options.iniPath = cli.layoutFile.value_or(userConfigDirectory() / "layout.ini");
         return std::make_unique<GuiEngine>(std::move(options), std::make_unique<ui::DarkHouseShell>());

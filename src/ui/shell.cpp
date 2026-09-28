@@ -150,6 +150,9 @@ void DarkHouseShell::drawMainMenuBar(PanelContext& ctx) {
         if (ImGui::MenuItem(reset.c_str())) layout_.resetLayout(active);
         bool vsync = ctx.gui.vsync();
         if (ImGui::MenuItem("Vertical Sync", nullptr, &vsync)) ctx.gui.setVsync(vsync);
+        bool lowPower = ctx.gui.lowPowerIdle();
+        if (ImGui::MenuItem("Low-Power Idle", nullptr, &lowPower)) ctx.gui.setLowPowerIdle(lowPower);
+        ImGui::SetItemTooltip("Wait for input instead of redrawing every frame while nothing changes");
         ImGui::EndMenu();
     }
 

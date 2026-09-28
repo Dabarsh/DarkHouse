@@ -46,7 +46,8 @@ void EnginePanel::draw(PanelContext& ctx) {
         ImGui::Text("Swapchain: %ux%u, %u images, %s", swapchain->extent().width, swapchain->extent().height,
                     swapchain->imageCount(), presentModeName(swapchain->presentMode()));
     }
-    ImGui::Text("Frame: %.2f ms (%.0f fps)", 1000.0f / (io.Framerate > 0.0f ? io.Framerate : 1.0f), io.Framerate);
+    ImGui::Text("Frame: %.2f ms (%.0f fps)%s", 1000.0f / (io.Framerate > 0.0f ? io.Framerate : 1.0f), io.Framerate,
+                ctx.gui.idle() ? ", idle" : "");
     ImGui::Text("Engine frame: %llu, dt %.2f ms", static_cast<unsigned long long>(ctx.frame.frameIndex),
                 ctx.frame.deltaSeconds * 1000.0);
     ImGui::Text("Canvas: %s", ctx.app.canvasAvailable() ? "GPU develop graph" : "unavailable");

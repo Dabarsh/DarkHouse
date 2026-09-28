@@ -160,13 +160,24 @@ void GuiEngine::detachGpu() noexcept {
     gpu_ = nullptr;
 }
 
-bool GuiEngine::pumpPlatformEvents(DarkHouseApp&) {
+bool GuiEngine::pumpPlatformEvents(DarkHouseApp& app) {
+    // Background work that must keep the loop turning, but not at full rate.
+    const bool engineBusy = app.pendingImportCount() > 0;
     if (window_->minimized()) {
         // Nothing to draw. Block briefly instead of spinning, but keep the
         // engine loop turning so imports still complete while minimized.
         PlatformWindow::waitEventsTimeout(0.1);
+    } else if (options_.lowPowerIdle && idleFrames_ >= kSettleFrames) {
+        // Idle: sleep until input arrives. Wakes at 4 Hz anyway so delayed
+        // tooltips and status changes still appear, and faster while
+        // imports are running so progress keeps moving.
+        PlatformWindow::waitEventsTimeout(engineBusy ? 0.1 : 0.25);
     } else {
         PlatformWindow::pollEvents();
+    }
+    if (window_->inputEventCount() != lastInputEvents_) {
+        lastInputEvents_ = window_->inputEventCount();
+        idleFrames_ = 0;
     }
     if (window_->consumeFramebufferResized() && swapchain_) swapchain_->requestRecreate();
     return !window_->shouldClose();
@@ -182,6 +193,14 @@ void GuiEngine::drawFrame(DarkHouseApp& app, const FrameContext& frame) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     layer_->draw(app, frame, *this);
+    // Held widgets and text entry keep drawing at full rate (drag feedback,
+    // caret blink); everything else counts towards going idle.
+    const ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsAnyItemActive() || io.WantTextInput) {
+        idleFrames_ = 0;
+    } else if (idleFrames_ < kSettleFrames) {
+        ++idleFrames_;
+    }
     ImGui::Render();
     renderMainViewport(ImGui::GetDrawData());
 

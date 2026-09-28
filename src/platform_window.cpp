@@ -84,6 +84,16 @@ PlatformWindow::PlatformWindow(const WindowOptions& options) {
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, &PlatformWindow::onFramebufferSize);
     glfwSetDropCallback(window_, &PlatformWindow::onDrop);
+    // Input counters for idle detection. Installed before the ImGui GLFW
+    // backend, which chains to previously installed callbacks.
+    glfwSetCursorPosCallback(window_, [](GLFWwindow* w, double, double) { countInput(w); });
+    glfwSetMouseButtonCallback(window_, [](GLFWwindow* w, int, int, int) { countInput(w); });
+    glfwSetScrollCallback(window_, [](GLFWwindow* w, double, double) { countInput(w); });
+    glfwSetKeyCallback(window_, [](GLFWwindow* w, int, int, int, int) { countInput(w); });
+    glfwSetCharCallback(window_, [](GLFWwindow* w, unsigned int) { countInput(w); });
+    glfwSetWindowFocusCallback(window_, [](GLFWwindow* w, int) { countInput(w); });
+    glfwSetCursorEnterCallback(window_, [](GLFWwindow* w, int) { countInput(w); });
+    glfwSetWindowRefreshCallback(window_, [](GLFWwindow* w) { countInput(w); });
 }
 
 PlatformWindow::~PlatformWindow() {
@@ -142,11 +152,17 @@ void PlatformWindow::waitEvents() { glfwWaitEvents(); }
 void PlatformWindow::waitEventsTimeout(double seconds) { glfwWaitEventsTimeout(seconds); }
 void PlatformWindow::postEmptyEvent() { glfwPostEmptyEvent(); }
 
+void PlatformWindow::countInput(GLFWwindow* window) noexcept {
+    if (auto* self = static_cast<PlatformWindow*>(glfwGetWindowUserPointer(window))) ++self->inputEvents_;
+}
+
 void PlatformWindow::onFramebufferSize(GLFWwindow* window, int, int) {
+    countInput(window);
     if (auto* self = static_cast<PlatformWindow*>(glfwGetWindowUserPointer(window))) self->framebufferResized_ = true;
 }
 
 void PlatformWindow::onDrop(GLFWwindow* window, int count, const char** paths) {
+    countInput(window);
     auto* self = static_cast<PlatformWindow*>(glfwGetWindowUserPointer(window));
     if (!self) return;
     for (int i = 0; i < count; ++i) self->droppedPaths_.emplace_back(paths[i]);  // GLFW frees them after the callback

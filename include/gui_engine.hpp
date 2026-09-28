@@ -48,6 +48,9 @@ struct GuiOptions {
     WindowOptions window;
     bool vsync = true;               // FIFO presentation; the frame loop then skips its own sleep
     bool multiViewport = false;      // panels can be dragged out into their own OS windows
+    // Block for input when nothing changes instead of redrawing every
+    // vsync: an idle DarkHouse window then costs ~4 frames per second.
+    bool lowPowerIdle = true;
     std::filesystem::path iniPath;   // persisted docking layout; empty = don't persist
 };
 
@@ -84,6 +87,10 @@ public:
     [[nodiscard]] bool vsync() const noexcept { return options_.vsync; }
     void setVsync(bool vsync);
     [[nodiscard]] bool multiViewport() const noexcept { return options_.multiViewport; }
+    [[nodiscard]] bool lowPowerIdle() const noexcept { return options_.lowPowerIdle; }
+    void setLowPowerIdle(bool enabled) noexcept { options_.lowPowerIdle = enabled; }
+    // True while the UI is waiting for input between frames (for diagnostics).
+    [[nodiscard]] bool idle() const noexcept { return idleFrames_ >= kSettleFrames; }
     [[nodiscard]] const std::filesystem::path& iniPath() const noexcept { return options_.iniPath; }
     [[nodiscard]] std::uint64_t presentedFrames() const noexcept { return presentedFrames_; }
     void requestClose();
@@ -121,6 +128,12 @@ private:
     std::vector<std::pair<std::uint64_t, VkDescriptorSet>> retiredTextures_;
 
     std::uint64_t presentedFrames_ = 0;
+
+    // Idle pacing: frames drawn since the last input or activity. ImGui needs
+    // a few frames after an event to settle hover state and layout.
+    static constexpr std::uint32_t kSettleFrames = 4;
+    std::uint32_t idleFrames_ = 0;
+    std::uint64_t lastInputEvents_ = 0;
 };
 
 }  // namespace darkhouse
