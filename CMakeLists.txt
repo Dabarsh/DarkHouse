@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 project(DarkHouse
     VERSION 0.1.0
     DESCRIPTION "Unified non-destructive RAW development, asset management, compositing and vector design"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,7 +40,9 @@ else()
 endif()
 find_package(Threads REQUIRED)
 
-# GLFW, GLM and Dear ImGui (docking) for the desktop front-end.
+# stb_image for photo decoding (engine), then GLFW, GLM and Dear ImGui
+# (docking) for the desktop front-end.
+include(DarkHouseCoreDependencies)
 if(DARKHOUSE_GUI)
     include(DarkHouseDependencies)
 endif()
@@ -172,6 +174,7 @@ add_library(darkhouse_core STATIC
     src/ai_segmentation.cpp
     src/denoise.cpp
     src/denoise_node.cpp
+    src/image_decoder.cpp
     src/ui/library_model.cpp
     include/app_controller.hpp
     include/asset_manager.hpp
@@ -185,6 +188,8 @@ add_library(darkhouse_core STATIC
     include/ai_segmentation.hpp
     include/denoise.hpp
     include/denoise_node.hpp
+    include/image_decoder.hpp
+    src/tiff_reader.hpp
     shaders/denoise_config.h
     include/ui/library_model.hpp
     schema/catalog.sql)
@@ -195,7 +200,7 @@ target_include_directories(darkhouse_core
     PRIVATE "${DARKHOUSE_GENERATED_DIR}")
 target_link_libraries(darkhouse_core
     PUBLIC  Vulkan::Vulkan Threads::Threads
-    PRIVATE ${DARKHOUSE_SQLITE_TARGET})
+    PRIVATE ${DARKHOUSE_SQLITE_TARGET} darkhouse_stb)
 target_compile_definitions(darkhouse_core PUBLIC DARKHOUSE_VERSION="${PROJECT_VERSION}")
 if(DARKHOUSE_VK_LAYER_MANIFEST_DIR)
     target_compile_definitions(darkhouse_core PRIVATE DARKHOUSE_VK_LAYER_DIR="${DARKHOUSE_VK_LAYER_MANIFEST_DIR}")
@@ -301,6 +306,12 @@ if(DARKHOUSE_BUILD_TESTS)
     darkhouse_apply_build_flags(darkhouse_denoise_test)
     add_test(NAME denoise_reference COMMAND darkhouse_denoise_test)
     set_tests_properties(denoise_reference PROPERTIES LABELS "denoise" TIMEOUT 120)
+
+    add_executable(darkhouse_image_decoder_test tests/image_decoder_test.cpp)
+    target_link_libraries(darkhouse_image_decoder_test PRIVATE darkhouse_core darkhouse_stb)
+    darkhouse_apply_build_flags(darkhouse_image_decoder_test)
+    add_test(NAME image_decoder COMMAND darkhouse_image_decoder_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
+    set_tests_properties(image_decoder PROPERTIES LABELS "preview" TIMEOUT 60)
 
     add_executable(darkhouse_denoise_gpu_test tests/denoise_gpu_test.cpp)
     target_link_libraries(darkhouse_denoise_gpu_test PRIVATE darkhouse_core)
