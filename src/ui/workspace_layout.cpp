@@ -128,9 +128,9 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         // | Search      |                 |
         // | Collections |  Library grid   |
         // | Metadata    |                 |
-        ImGuiID left = split(center, ImGuiDir_Left, 0.20f);
-        const ImGuiID metadata = split(left, ImGuiDir_Down, 0.45f);
-        const ImGuiID search = split(left, ImGuiDir_Up, 0.30f);
+        ImGuiID left = split(center, ImGuiDir_Left, 0.21f);
+        const ImGuiID metadata = split(left, ImGuiDir_Down, 0.42f);
+        const ImGuiID search = split(left, ImGuiDir_Up, 0.52f);
         dock(PanelId::SEARCH, search);
         dock(PanelId::COLLECTIONS, left);
         dock(PanelId::METADATA, metadata);

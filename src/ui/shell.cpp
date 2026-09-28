@@ -1,5 +1,6 @@
 #include "ui/shell.hpp"
 
+#include "ui/panels.hpp"
 #include "ui/theme.hpp"
 
 #include <imgui_internal.h>  // BeginViewportSideBar
@@ -49,16 +50,20 @@ const char* workspaceShortcut(AppMode mode) {
     return "";
 }
 
+std::unique_ptr<Panel> makePanel(PanelId id) {
+    switch (id) {
+    case PanelId::COLLECTIONS: return std::make_unique<CollectionsPanel>();
+    case PanelId::SEARCH: return std::make_unique<SearchPanel>();
+    case PanelId::METADATA: return std::make_unique<MetadataPanel>();
+    case PanelId::ENGINE: return std::make_unique<EnginePanel>();
+    default: return std::make_unique<PlaceholderPanel>(id);
+    }
+}
+
 }  // namespace
 
 DarkHouseShell::DarkHouseShell() {
-    for (PanelId id : allPanels()) {
-        if (id == PanelId::ENGINE) {
-            panels_[index(id)] = std::make_unique<EnginePanel>();
-        } else {
-            panels_[index(id)] = std::make_unique<PlaceholderPanel>(id);
-        }
-    }
+    for (PanelId id : allPanels()) panels_[index(id)] = makePanel(id);
 }
 
 // A future from std::async joins its task on destruction, so a folder scan
@@ -70,7 +75,8 @@ void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngin
     if (!dropped.empty()) startImportScan(std::move(dropped));
     pollImportScan(app);
     library_.update(app);
-    PanelContext ctx{app, frame, gui, library_};
+    ShellRequests requests;
+    PanelContext ctx{app, frame, gui, library_, requests};
 
     handleShortcuts(ctx);
     // Bars shrink the main viewport's work area, so they come before the dockspace.
@@ -78,6 +84,7 @@ void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngin
     drawStatusBar(ctx);
     layout_.submit(frame.mode);
     drawPanels(ctx);
+    if (requests.openImportDialog) openImportDialog_ = true;
 
     drawImportDialog(ctx);
     drawAboutDialog(ctx);

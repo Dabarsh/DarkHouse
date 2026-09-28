@@ -41,12 +41,19 @@ struct PanelInfo {
 [[nodiscard]] const std::array<PanelId, kPanelCount>& allPanels() noexcept;
 [[nodiscard]] constexpr std::size_t index(PanelId id) noexcept { return static_cast<std::size_t>(id); }
 
+// What panels may ask of the shell, which owns dialogs. Handled after all
+// panels have drawn.
+struct ShellRequests {
+    bool openImportDialog = false;
+};
+
 // Everything a panel may touch while drawing one frame.
 struct PanelContext {
     DarkHouseApp& app;
     const FrameContext& frame;
     GuiEngine& gui;
     LibraryModel& library;  // collection, filter, sort and selection shared by the catalog panels
+    ShellRequests& requests;
 };
 
 class Panel {
