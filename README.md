@@ -60,7 +60,8 @@ Dear ImGui (Vulkan backend) · ONNX Runtime
 | --- | --- |
 | `schema/catalog.sql` | Catalog schema: `assets`, `metadata`, `edit_nodes`, indexes. Embedded into the binary at configure time. |
 | `include/asset_manager.hpp` | `AssetRecord` / `AssetMetadata`, async `importFile()`, parameterized `queryAssets()`, ratings/flags/labels, edit stacks. |
-| `include/render_pipeline.hpp` | `PixelFormat`, `GPUTexture`, `VulkanContext`, `ComputeNode`, `ExposureNode`, `RenderPipelineGraph`. |
+| `include/vulkan_context.hpp` | `PixelFormat`, `GPUTexture`, `VulkanContext` (instance, device, queue, textures, uploads) and synchronization2 barrier helpers. |
+| `include/render_pipeline.hpp` | `ComputeNode`, `ExposureNode`, `RenderPipelineGraph`. |
 | `shaders/exposure.comp` | Exposure (EV), highlights/shadows and contrast on RGBA16F storage images, in 16×16 workgroups. |
 | `include/layer_stack.hpp` | `TILE_SIZE`, FP16 tiles, `SparseRasterLayer`, `LayerNode` tree, blend modes, CPU reference compositor. |
 | `include/ai_segmentation.hpp` | `AISegmentationEngine` (subject/sky) and the ONNX Runtime backend. |

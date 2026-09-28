@@ -108,11 +108,14 @@ add_executable(DarkHouse
     src/main.cpp
     src/app_controller.cpp
     src/asset_manager.cpp
+    src/vulkan_context.cpp
     src/render_pipeline.cpp
     src/layer_stack.cpp
     src/ai_segmentation.cpp
     include/app_controller.hpp
     include/asset_manager.hpp
+    include/vulkan_context.hpp
+    include/vulkan_utils.hpp
     include/render_pipeline.hpp
     include/layer_stack.hpp
     include/ai_segmentation.hpp
