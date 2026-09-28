@@ -55,7 +55,7 @@ ONNX Runtime
                AppEvents    │                               │  FrameContext (mode, canvas texture)
                             ▼                               │
                          ┌──────────────────────────────────┴┐
-                         │           DarkHouseApp            │  modes: CATALOG | CANVAS | HYBRID_SPLIT
+                         │           DarkHouseApp            │  modes: CATALOG | DEVELOP | CANVAS | HYBRID_SPLIT
                          │ event queue → frame loop → pacing │
                          └──┬─────────┬─────────┬────────────┘
                             │         │         │
@@ -105,7 +105,7 @@ Each frame runs these steps in order:
 2. Queued events are drained. Events are thread-safe to post from anywhere.
 3. Finished imports are collected, and a finished photo decode replaces the
    document (see [Live photo preview](#live-photo-preview)).
-4. If the canvas is visible (`CANVAS` / `HYBRID_SPLIT`), dirty document tiles
+4. If the canvas is visible (every mode but `CATALOG`), dirty document tiles
    are composited to FP16 on all cores and uploaded in one submission, and
    the develop graph is re-evaluated only when something changed.
 5. `FrontEnd::drawFrame` builds the UI and presents. The viewport samples the
@@ -144,14 +144,23 @@ tooltips, and at 10 Hz while imports are running. An idle window costs about
 ![The Catalog workspace: search, collections, metadata and the library grid](docs/images/workspace-catalog.png)
 
 DarkHouse opens in a window titled **DarkHouse**, 85% of the screen by
-default. Three workspaces follow the application mode. Switch with the
-centred **Catalog | Canvas | Split** buttons or `Ctrl+1/2/3`:
+default. Four workspaces follow the application mode, and the photo tools
+are split the way photographers know them: parametric development in
+**Develop (Lightroom)**, layer compositing in **Canvas & Compositing
+(Photoshop)**. Switch with the tabs centred in the top bar (short names when
+the window is narrow) or `Ctrl+1/2/3/4`:
 
 | Workspace | Focus | Default layout |
 | --- | --- | --- |
 | **Catalog** | Asset grid | Search / Collections / Metadata · Library grid |
-| **Canvas** | Layer stack | Collections + Search / Metadata · Viewport over Filmstrip · Layers / Adjustments |
-| **Split** | Dual view | Collections + Search / Metadata · Library grid + Viewport over Filmstrip · Layers / Adjustments |
+| **Develop (Lightroom)** | One photo, parametric | Collections + Search / Metadata · Viewport over Filmstrip · Adjustments + Masking |
+| **Canvas & Compositing (Photoshop)** | Layer document | Viewport (zoom 0.5 % to 25 600 %, pixel grid from 800 %) · Properties + Masking over Layers |
+| **Split** | Library + develop | Collections + Search / Metadata · Library grid + Viewport over Filmstrip · Adjustments + Masking |
+
+Opening a photo from the Catalog goes to Develop; from any other workspace
+it stays where it is. Masks made in the Masking panel serve both modules:
+Develop applies local edits through them, and in Canvas the Properties
+panel's **From Mask...** writes one into the selected layer's mask.
 
 Every panel is a dockable ImGui window. Each workspace has its own dockspace
 and its own arrangement, and all of them persist to
@@ -166,10 +175,12 @@ dragged out into their own OS windows, for example a second monitor.
 | Left | **Search** | Text (file name, camera, lens), minimum rating, flag, colour label, camera, ISO range, sort order. Filtering runs in memory on every keystroke. |
 | Left | **Metadata** | Rating, pick/reject and colour label (editable), camera, lens, exposure, dates, GPS and file details of the selected photo. |
 | Center | **Library** | Virtualized thumbnail grid with zoom, context menu, tooltips and keyboard culling. |
-| Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard. Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% buttons switch zoom. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
+| Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard (every workspace but Catalog). Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% buttons switch zoom. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
 | Center | **Filmstrip** | The current collection as a horizontal strip, kept in sync with the grid. |
-| Right | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, blend mode, opacity, masks, add/delete/reorder. |
-| Right | **Adjustments** | Tone (exposure, contrast, highlights, shadows) and Noise Reduction (luminance, color, detail, automatic or manual noise level) run live on the GPU and are saved to the photo's edit stack on release. White balance, presence and 8-band HSL sliders are previews until their GPU nodes exist. |
+| Develop | **Adjustments** | White balance (temperature in kelvin, tint), tone (exposure, contrast, highlights, shadows), presence (vibrance, saturation), the 8-band colour mixer (hue, saturation, luminance), 3-way colour grading wheels with blending and balance, and noise reduction. Every control runs live on the GPU develop graph and is saved to the photo's edit stack on release. |
+| Develop, Canvas | **Masking** | Local adjustments: a stack of masks built from brush, linear and radial gradient, luminance and colour range components (and Subject / Sky placeholders), each added, subtracted or intersected, inverted and faded; brush size, feather, flow and erase; the edits each mask applies. The viewport paints and drags the selected component and shows the selected mask as a red overlay. |
+| Canvas | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, the selected layer's blend mode and opacity, add/delete/reorder. |
+| Canvas | **Properties** | The selected layer: name, layer mask (add, enable, remove, or make from a Masking panel mask) and its content. |
 | Floating | **Engine** | GPU, validation, swapchain and frame-timing diagnostics, and the GPU time of every develop node (View → Panels). |
 
 Keyboard (grid and filmstrip focused):
@@ -180,8 +191,8 @@ Keyboard (grid and filmstrip focused):
 | `0`–`5` | Star rating |
 | `P` / `X` / `U` | Pick / reject / unflag |
 | `6` `7` `8` `9` | Red / yellow / green / blue label (press again to clear) |
-| `Enter`, double-click | Open in the Canvas workspace |
-| `Ctrl+1/2/3` | Catalog / Canvas / Split |
+| `Enter`, double-click | Open the photo (in Develop when coming from the Catalog) |
+| `Ctrl+1/2/3/4` | Catalog / Develop / Canvas / Split |
 | `Ctrl+I` | Import Photos… (or drop files and folders onto the window) |
 | `Ctrl+Q` | Quit |
 
@@ -406,12 +417,13 @@ This is the core architecture plus the desktop shell. What works today:
 - **Layers**: sparse FP16 tiles with F16C conversion, dirty tracking, the
   layer tree with masks and groups, the CPU reference compositor for all
   five blend modes, and parallel tile upload.
-- **App**: event-driven frame loop, three modes, graceful degradation, headless
+- **App**: event-driven frame loop, four modes, graceful degradation, headless
   batch mode.
-- **Desktop UI**: docking shell with three persistent workspace layouts, the
-  nine panels above, culling shortcuts, import by dialog or drag and drop,
-  the opened photo on the canvas with live exposure and noise-reduction
-  editing, idle-aware frame pacing, and a neutral grey theme.
+- **Desktop UI**: docking shell with four persistent workspace layouts
+  (Catalog, Develop, Canvas & Compositing, Split), the panels above, culling
+  shortcuts, import by dialog or drag and drop, the opened photo on the canvas
+  with live develop and local-mask editing, idle-aware frame pacing, and a
+  neutral grey theme.
 
 Next milestones:
 

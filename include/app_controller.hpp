@@ -42,8 +42,9 @@ namespace darkhouse {
 
 enum class AppMode : std::uint8_t {
     CATALOG,       // library grid: browse, rate, filter, import
-    CANVAS,        // single-document editor: develop, composite, vector
-    HYBRID_SPLIT,  // filmstrip + canvas side by side
+    DEVELOP,       // parametric photo development: tone, colour, detail, lens, local masks
+    CANVAS,        // compositing: layer stack, blend modes, painting, channels, paths, transforms
+    HYBRID_SPLIT,  // library grid and develop view side by side
 };
 
 [[nodiscard]] std::string_view toString(AppMode mode) noexcept;
@@ -90,7 +91,7 @@ struct SetColorLabelEvent {
     ColorLabel label = ColorLabel::NONE;
 };
 struct OpenAssetEvent {
-    std::string assetId;  // loads its develop stack and photo; leaves CATALOG for CANVAS
+    std::string assetId;  // loads its develop stack and photo; leaves CATALOG for DEVELOP
 };
 // Replaces the parameters of one develop-stack node (same bytes as
 // edit_nodes.serialized_params) and re-renders the canvas. With `persist`,

@@ -10,15 +10,17 @@ constexpr std::array<PanelInfo, kPanelCount> kPanels{{
     {PanelId::ASSET_GRID, "Library", "Library", "Thumbnail grid of the current collection"},
     {PanelId::VIEWPORT, "Viewport", "Viewport", "The developed canvas"},
     {PanelId::FILMSTRIP, "Filmstrip", "Filmstrip", "The current collection as a strip, for quick navigation"},
-    {PanelId::LAYERS, "Layers", "Layers", "Unified stack of parametric, raster, vector and smart-object layers"},
-    {PanelId::ADJUSTMENTS, "Adjustments", "Adjustments", "Tone, HSL and colour adjustments of the active layer"},
+    {PanelId::LAYERS, "Layers", "Layers", "Layer stack (pixel, adjustment, vector, smart object, group) with blend mode and opacity"},
+    {PanelId::ADJUSTMENTS, "Adjustments", "Adjustments", "Develop: white balance, tone, colour mixer, colour grading and detail of the photo"},
     {PanelId::ENGINE, "Engine", "Engine", "GPU, swapchain and frame timing diagnostics"},
     {PanelId::MASKING, "Masking", "Masking", "Masks for local adjustments: brush, gradients, colour and luminance ranges"},
+    {PanelId::PROPERTIES, "Properties", "Properties", "The selected layer: name, layer mask and content"},
 }};
 
+// Menu order: catalog panels, the canvas, develop panels, compositing panels.
 constexpr std::array<PanelId, kPanelCount> kAllPanels{
-    PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA,    PanelId::ASSET_GRID, PanelId::VIEWPORT,
-    PanelId::FILMSTRIP,   PanelId::LAYERS, PanelId::ADJUSTMENTS, PanelId::ENGINE,     PanelId::MASKING,
+    PanelId::COLLECTIONS, PanelId::SEARCH,  PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT,   PanelId::FILMSTRIP,
+    PanelId::ADJUSTMENTS, PanelId::MASKING, PanelId::LAYERS,   PanelId::PROPERTIES, PanelId::ENGINE,
 };
 
 const char* presentModeName(VkPresentModeKHR mode) {

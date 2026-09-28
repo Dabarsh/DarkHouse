@@ -271,7 +271,7 @@ void MetadataPanel::draw(PanelContext& ctx) {
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("Open in Canvas")) ctx.app.postEvent(OpenAssetEvent{asset->id});
+    if (ImGui::Button("Open Photo")) ctx.app.postEvent(OpenAssetEvent{asset->id});
     ImGui::SameLine();
     if (ImGui::Button("Copy Path")) ImGui::SetClipboardText(asset->filePath.c_str());
 }

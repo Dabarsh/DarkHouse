@@ -271,6 +271,23 @@ void testLayerMask() {
         threw = true;
     }
     CHECK(threw);
+
+    // Geometric masks need no image; ranges do.
+    CHECK(!readsImage(mask));
+    const std::vector<float> withImage = evaluateMask(mask, W, H, rgba);
+    const std::vector<float> withoutImage = evaluateMask(mask, W, H, {});
+    CHECK(withImage == withoutImage);
+    MaskComponent range;
+    range.shape = MaskShape::LUMINANCE_RANGE;
+    mask.components.push_back(range);
+    CHECK(readsImage(mask));
+    threw = false;
+    try {
+        (void)evaluateMask(mask, W, H, {});
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
 }
 
 }  // namespace

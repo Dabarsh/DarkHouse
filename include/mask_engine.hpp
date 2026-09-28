@@ -169,8 +169,12 @@ private:
 // Combines one component's alpha into the running mask value.
 [[nodiscard]] float combineMask(float mask, const MaskComponent& component, float alpha) noexcept;
 
+// True when a component measures the image (luminance / colour ranges, sky).
+[[nodiscard]] bool readsImage(const LocalAdjustment& adjustment) noexcept;
+
 // The whole mask of `adjustment` (without its amount), width * height values.
-// `rgba` is the source image (linear RGBA floats) the ranges are measured on.
+// `rgba` is the source image (linear RGBA floats) the ranges are measured on;
+// it may be empty when !readsImage(adjustment).
 [[nodiscard]] std::vector<float> evaluateMask(const LocalAdjustment& adjustment, std::uint32_t width,
                                               std::uint32_t height, std::span<const float> rgba);
 
@@ -178,8 +182,8 @@ private:
 [[nodiscard]] Rgb applyLocalAdjust(const LocalAdjustParams& params, const Rgb& rgb) noexcept;
 
 // Canvas layers: writes the mask of `adjustment` (evaluated against
-// `sourceRgba`, width x height linear RGBA) into a one-channel layer mask of
-// the same size, replacing its contents. The same shapes serve develop masks
+// `sourceRgba`, width x height linear RGBA, or empty when !readsImage) into a
+// one-channel layer mask of the same size, replacing its contents. The same shapes serve develop masks
 // and compositing layer masks.
 void writeLayerMask(const LocalAdjustment& adjustment, SparseRasterLayer& layerMask, std::span<const float> sourceRgba);
 

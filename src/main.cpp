@@ -60,7 +60,7 @@ void printUsage(std::ostream& out) {
            "                          (use \"\" to list everything)\n"
            "  --rate <asset-id> <0-5> set an asset's star rating\n"
            "  --open <asset-id>       open an asset on the canvas: its photo and develop stack\n"
-           "  --mode <catalog|canvas|split>\n"
+           "  --mode <catalog|develop|canvas|split>\n"
            "  --canvas <W>x<H>        empty document size before a photo is opened (default 2048x2048)\n"
            "  --preview-size <px>     longest edge of an opened photo on the canvas; larger files are\n"
            "                          downscaled for interactive editing (default 3072, 0 = full size)\n"
@@ -195,7 +195,7 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
         } else if (arg == "--mode") {
             const auto v = value();
             const auto mode = v ? parseAppMode(*v) : std::nullopt;
-            if (!mode) return fail("--mode must be catalog, canvas or split");
+            if (!mode) return fail("--mode must be catalog, develop, canvas or split");
             cli.config.initialMode = *mode;
         } else if (arg == "--canvas") {
             const auto v = value();

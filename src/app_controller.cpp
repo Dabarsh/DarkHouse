@@ -47,6 +47,7 @@ public:
 std::string_view toString(AppMode mode) noexcept {
     switch (mode) {
     case AppMode::CATALOG: return "catalog";
+    case AppMode::DEVELOP: return "develop";
     case AppMode::CANVAS: return "canvas";
     case AppMode::HYBRID_SPLIT: return "split";
     }
@@ -55,6 +56,7 @@ std::string_view toString(AppMode mode) noexcept {
 
 std::optional<AppMode> parseAppMode(std::string_view text) noexcept {
     if (text == "catalog") return AppMode::CATALOG;
+    if (text == "develop") return AppMode::DEVELOP;
     if (text == "canvas") return AppMode::CANVAS;
     if (text == "split" || text == "hybrid") return AppMode::HYBRID_SPLIT;
     return std::nullopt;
@@ -465,7 +467,7 @@ void DarkHouseApp::handle(const OpenAssetEvent& event) {
         rebuildDevelopGraph(assets_->loadEditStack(asset->id));
         startPhotoLoad(*asset);
         logLine("info", "opened ", asset->fileName, " [", asset->id, "]");
-        if (mode() == AppMode::CATALOG) handle(SwitchModeEvent{AppMode::CANVAS});
+        if (mode() == AppMode::CATALOG) handle(SwitchModeEvent{AppMode::DEVELOP});
     } catch (const std::exception& e) {
         logLine("error", "open failed for ", event.assetId, ": ", e.what());
     }

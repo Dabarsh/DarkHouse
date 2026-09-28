@@ -28,8 +28,9 @@ enum class PanelId : std::uint8_t {
     ADJUSTMENTS,  // right:  tone / HSL / colour adjustments
     ENGINE,       // floating diagnostics
     MASKING,      // right:  local-adjustment masks and masking tools
+    PROPERTIES,   // right:  the selected layer's properties (Canvas & Compositing)
 };
-inline constexpr std::size_t kPanelCount = 10;
+inline constexpr std::size_t kPanelCount = 11;
 
 struct PanelInfo {
     PanelId id;
@@ -43,6 +44,7 @@ struct PanelInfo {
 [[nodiscard]] constexpr std::size_t index(PanelId id) noexcept { return static_cast<std::size_t>(id); }
 
 struct MaskingState;  // ui/masking.hpp
+struct CanvasState;   // ui/canvas_state.hpp
 
 // What panels may ask of the shell, which owns dialogs. Handled after all
 // panels have drawn.
@@ -58,6 +60,7 @@ struct PanelContext {
     LibraryModel& library;  // collection, filter, sort and selection shared by the catalog panels
     ShellRequests& requests;
     MaskingState& masking;  // masks and masking tools, shared by the Masking panel and the viewport
+    CanvasState& canvas;    // the selected layer, shared by the compositing panels
 };
 
 class Panel {

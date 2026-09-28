@@ -417,9 +417,18 @@ float combineMask(float mask, const MaskComponent& c, float alpha) noexcept {
     return mask + a - mask * a;
 }
 
+bool readsImage(const LocalAdjustment& adjustment) noexcept {
+    return std::any_of(adjustment.components.begin(), adjustment.components.end(), [](const MaskComponent& c) {
+        return c.shape == MaskShape::LUMINANCE_RANGE || c.shape == MaskShape::COLOR_RANGE || c.shape == MaskShape::SKY;
+    });
+}
+
 std::vector<float> evaluateMask(const LocalAdjustment& adjustment, std::uint32_t width, std::uint32_t height,
                                 std::span<const float> rgba) {
-    if (rgba.size() < std::size_t{width} * height * 4) throw std::invalid_argument("evaluateMask: image too small");
+    const bool hasImage = !rgba.empty();
+    if (hasImage ? rgba.size() < std::size_t{width} * height * 4 : readsImage(adjustment)) {
+        throw std::invalid_argument("evaluateMask: image too small");
+    }
     std::vector<BrushRaster> brushes(adjustment.components.size());
     for (std::size_t i = 0; i < adjustment.components.size(); ++i) {
         if (adjustment.components[i].shape != MaskShape::BRUSH) continue;
@@ -430,7 +439,7 @@ std::vector<float> evaluateMask(const LocalAdjustment& adjustment, std::uint32_t
     for (std::uint32_t y = 0; y < height; ++y) {
         for (std::uint32_t x = 0; x < width; ++x) {
             const std::size_t p = std::size_t{y} * width + x;
-            const Rgb rgb{rgba[p * 4], rgba[p * 4 + 1], rgba[p * 4 + 2]};
+            const Rgb rgb = hasImage ? Rgb{rgba[p * 4], rgba[p * 4 + 1], rgba[p * 4 + 2]} : Rgb{0.0f, 0.0f, 0.0f};
             float m = 0.0f;
             for (std::size_t i = 0; i < adjustment.components.size(); ++i) {
                 const MaskComponent& c = adjustment.components[i];

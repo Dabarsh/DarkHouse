@@ -21,13 +21,16 @@ using theme::kAccent;
 using theme::kAccentActive;
 using theme::kAccentHovered;
 
-constexpr std::array<AppMode, kWorkspaceCount> kModes{AppMode::CATALOG, AppMode::CANVAS, AppMode::HYBRID_SPLIT};
+const std::array<AppMode, kWorkspaceCount>& kModes = workspaceModes();
 
 const char* workspaceHint(AppMode mode) {
     switch (mode) {
     case AppMode::CATALOG: return "Library grid: browse, rate, filter and import";
-    case AppMode::CANVAS: return "Single document: develop, composite and design with the layer stack";
-    case AppMode::HYBRID_SPLIT: return "Library grid and canvas side by side";
+    case AppMode::DEVELOP:
+        return "Parametric photo development: white balance, tone, colour mixer, colour grading, detail and local masks";
+    case AppMode::CANVAS:
+        return "Compositing: layer stack, blend modes and opacity, layer masks and the selected layer's properties";
+    case AppMode::HYBRID_SPLIT: return "Library grid and the develop view side by side";
     }
     return "";
 }
@@ -35,8 +38,9 @@ const char* workspaceHint(AppMode mode) {
 ImGuiKey workspaceKey(AppMode mode) {
     switch (mode) {
     case AppMode::CATALOG: return ImGuiKey_1;
-    case AppMode::CANVAS: return ImGuiKey_2;
-    case AppMode::HYBRID_SPLIT: return ImGuiKey_3;
+    case AppMode::DEVELOP: return ImGuiKey_2;
+    case AppMode::CANVAS: return ImGuiKey_3;
+    case AppMode::HYBRID_SPLIT: return ImGuiKey_4;
     }
     return ImGuiKey_None;
 }
@@ -44,8 +48,9 @@ ImGuiKey workspaceKey(AppMode mode) {
 const char* workspaceShortcut(AppMode mode) {
     switch (mode) {
     case AppMode::CATALOG: return "Ctrl+1";
-    case AppMode::CANVAS: return "Ctrl+2";
-    case AppMode::HYBRID_SPLIT: return "Ctrl+3";
+    case AppMode::DEVELOP: return "Ctrl+2";
+    case AppMode::CANVAS: return "Ctrl+3";
+    case AppMode::HYBRID_SPLIT: return "Ctrl+4";
     }
     return "";
 }
@@ -62,6 +67,7 @@ std::unique_ptr<Panel> makePanel(PanelId id) {
     case PanelId::ADJUSTMENTS: return std::make_unique<AdjustmentsPanel>();
     case PanelId::ENGINE: return std::make_unique<EnginePanel>();
     case PanelId::MASKING: return std::make_unique<MaskingPanel>();
+    case PanelId::PROPERTIES: return std::make_unique<PropertiesPanel>();
     }
     return nullptr;
 }
@@ -87,7 +93,7 @@ void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngin
     pollImportScan(app);
     library_.update(app);
     ShellRequests requests;
-    PanelContext ctx{app, frame, gui, library_, requests, masking_};
+    PanelContext ctx{app, frame, gui, library_, requests, masking_, canvas_};
 
     handleShortcuts(ctx);
     // Bars shrink the main viewport's work area, so they come before the dockspace.
@@ -154,7 +160,7 @@ void DarkHouseShell::drawMainMenuBar(PanelContext& ctx) {
             ImGui::SetItemTooltip("%s", panelInfo(id).description);
         }
         ImGui::Separator();
-        const std::string reset = std::string("Reset ") + workspaceTitle(active) + " Layout";
+        const std::string reset = std::string("Reset ") + workspaceShortTitle(active) + " Layout";
         if (ImGui::MenuItem(reset.c_str())) layout_.resetLayout(active);
         bool vsync = ctx.gui.vsync();
         if (ImGui::MenuItem("Vertical Sync", nullptr, &vsync)) ctx.gui.setVsync(vsync);
@@ -179,8 +185,18 @@ void DarkHouseShell::drawMainMenuBar(PanelContext& ctx) {
 void DarkHouseShell::drawWorkspaceSwitcher(PanelContext& ctx) {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float gap = 2.0f;
-    float width = 0.0f;
-    for (AppMode mode : kModes) width += ImGui::CalcTextSize(workspaceTitle(mode)).x + style.FramePadding.x * 4.0f + gap;
+    auto switcherWidth = [&](const char* (*title)(AppMode)) {
+        float width = 0.0f;
+        for (AppMode mode : kModes) width += ImGui::CalcTextSize(title(mode)).x + style.FramePadding.x * 4.0f + gap;
+        return width;
+    };
+    // Full tab titles when they fit beside the menus, short ones otherwise.
+    const char* (*title)(AppMode) = workspaceTitle;
+    float width = switcherWidth(title);
+    if (ImGui::GetCursorPosX() + width + style.ItemSpacing.x * 4.0f > ImGui::GetWindowWidth()) {
+        title = workspaceShortTitle;
+        width = switcherWidth(title);
+    }
 
     // Centred in the bar, unless the menus already reach past the centre.
     const float centred = (ImGui::GetWindowWidth() - width) * 0.5f;
@@ -195,7 +211,7 @@ void DarkHouseShell::drawWorkspaceSwitcher(PanelContext& ctx) {
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? kAccentHovered : style.Colors[ImGuiCol_FrameBgHovered]);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAccentActive);
         ImGui::PushID(static_cast<int>(mode));
-        if (ImGui::Button(workspaceTitle(mode))) requestMode(ctx, mode);
+        if (ImGui::Button(title(mode))) requestMode(ctx, mode);
         ImGui::PopID();
         ImGui::PopStyleColor(3);
         ImGui::SetItemTooltip("%s  (%s)", workspaceHint(mode), workspaceShortcut(mode));
@@ -214,7 +230,7 @@ void DarkHouseShell::drawStatusBar(PanelContext& ctx) {
                                     ImGui::GetFrameHeight(), flags)) {
         if (ImGui::BeginMenuBar()) {
             ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
-            ImGui::TextUnformatted(workspaceTitle(ctx.frame.mode));
+            ImGui::TextUnformatted(workspaceShortTitle(ctx.frame.mode));
             ImGui::PopStyleColor();
             ImGui::Separator();
             ImGui::TextUnformatted(ctx.app.config().catalogPath.filename().string().c_str());
@@ -269,6 +285,8 @@ void DarkHouseShell::drawPanels(PanelContext& ctx) {
         if (visible) panel.draw(ctx);
         ImGui::End();
     }
+    // Focusing a docked window selects its tab.
+    if (const std::optional<PanelId> front = layout_.takeFrontTab(mode)) ImGui::SetWindowFocus(layout_.windowName(mode, *front));
 }
 
 // -----------------------------------------------------------------------------

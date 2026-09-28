@@ -1,8 +1,9 @@
 // DarkHouse — the dockable panels.
 //
-//   Left dock    CollectionsPanel, SearchPanel, MetadataPanel
-//   Center dock  LibraryGridPanel, ViewportPanel, FilmstripPanel
-//   Right dock   LayersPanel, AdjustmentsPanel, MaskingPanel
+//   Catalog      CollectionsPanel, SearchPanel, MetadataPanel, LibraryGridPanel, FilmstripPanel
+//   Canvas view  ViewportPanel (every workspace but Catalog)
+//   Develop      AdjustmentsPanel, MaskingPanel
+//   Compositing  LayersPanel, PropertiesPanel
 //
 // Catalog panels share one LibraryModel (collection, filter, selection) via
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
@@ -85,7 +86,8 @@ public:
 };
 
 // Unified layer stack: parametric, raster, vector, smart-object and group
-// layers of the open document, with add / delete / reorder and properties.
+// layers of the open document, with the selected layer's blend mode and
+// opacity, add / delete / reorder.
 class LayersPanel final : public Panel {
 public:
     LayersPanel() noexcept : Panel(PanelId::LAYERS) {}
@@ -94,12 +96,18 @@ public:
 private:
     void drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth);
     void drawAddMenu(PanelContext& ctx);
-    void drawProperties(PanelContext& ctx, LayerNode& layer);
     void addLayer(PanelContext& ctx, std::unique_ptr<LayerNode> layer);
     [[nodiscard]] std::string nextName(const char* base);
 
-    LayerNode* selected_ = nullptr;  // validated against the document every frame
     int nameCounter_ = 1;
+};
+
+// The selected layer (CanvasState): name, layer mask (including one made
+// from a develop mask) and its content's settings.
+class PropertiesPanel final : public Panel {
+public:
+    PropertiesPanel() noexcept : Panel(PanelId::PROPERTIES) {}
+    void draw(PanelContext& ctx) override;
 };
 
 // Develop adjustments: white balance, tone, presence, colour mixer, colour

@@ -239,10 +239,12 @@ if(DARKHOUSE_GUI)
         src/ui/widgets.cpp
         src/ui/develop_sections.cpp
         src/ui/masking.cpp
+        src/ui/canvas_state.cpp
         src/ui/panels/left_dock.cpp
         src/ui/panels/center_dock.cpp
-        src/ui/panels/right_dock.cpp
+        src/ui/panels/develop_panel.cpp
         src/ui/panels/masking_panel.cpp
+        src/ui/panels/canvas_panels.cpp
         include/platform_window.hpp
         include/gui_engine.hpp
         include/ui/shell.hpp
@@ -252,6 +254,7 @@ if(DARKHOUSE_GUI)
         include/ui/widgets.hpp
         include/ui/develop_sections.hpp
         include/ui/masking.hpp
+        include/ui/canvas_state.hpp
         include/ui/panels.hpp)
     target_link_libraries(darkhouse_gui PUBLIC darkhouse_core DarkHouse::imgui glfw glm::glm)
     target_include_directories(darkhouse_gui PRIVATE "${CMAKE_BINARY_DIR}/generated")  # darkhouse_ui_font.hpp

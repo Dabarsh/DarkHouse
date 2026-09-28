@@ -1,8 +1,10 @@
-// Right dock: unified layer stack and develop adjustments.
+// Canvas & Compositing panels: the unified layer stack and the selected
+// layer's properties.
 
 #include "ui/panels.hpp"
 
-#include "denoise_node.hpp"
+#include "ui/canvas_state.hpp"
+#include "ui/masking.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -38,33 +40,6 @@ LayerStyle layerStyle(LayerType type) {
     case LayerType::GROUP: return {"GRP", theme::kLayerGroup, "Group (composited in isolation)", true};
     }
     return {"?", theme::kLayerGroup, "", false};
-}
-
-const char* blendModeName(BlendMode mode) {
-    switch (mode) {
-    case BlendMode::NORMAL: return "Normal";
-    case BlendMode::MULTIPLY: return "Multiply";
-    case BlendMode::SCREEN: return "Screen";
-    case BlendMode::OVERLAY: return "Overlay";
-    case BlendMode::COLOR_DODGE: return "Color Dodge";
-    }
-    return "?";
-}
-
-// Re-dirties every raster tile and mask under `root`. Property changes
-// (visibility, opacity, blend, masks, order) do not touch pixels, so without
-// this the engine would keep showing the old composite.
-void invalidateComposite(LayerNode& root) {
-    root.visit([](LayerNode& node, std::size_t) {
-        if (SparseRasterLayer* raster = node.raster()) raster->markDirtyRegion(0, 0, raster->width(), raster->height());
-        if (SparseRasterLayer* mask = node.mask()) mask->markDirtyRegion(0, 0, mask->width(), mask->height());
-    });
-}
-
-bool containsLayer(const LayerNode& root, const LayerNode* target) {
-    bool found = false;
-    root.visit([&](const LayerNode& node, std::size_t) { found = found || &node == target; });
-    return found;
 }
 
 std::size_t rasterCount(const LayerNode& root, const LayerNode* excludeSubtree) {
@@ -165,73 +140,93 @@ std::string LayersPanel::nextName(const char* base) { return std::string(base) +
 
 void LayersPanel::addLayer(PanelContext& ctx, std::unique_ptr<LayerNode> layer) {
     LayerNode& root = ctx.app.document();
+    LayerNode*& selected = ctx.canvas.selectedLayer;
     // Above the selection, in the same group; inside a selected group, on top.
     LayerNode* parent = &root;
     std::size_t position = root.childCount();
-    if (selected_ && selected_ != &root) {
-        if (selected_->isGroup()) {
-            parent = selected_;
-            position = selected_->childCount();
+    if (selected && selected != &root) {
+        if (selected->isGroup()) {
+            parent = selected;
+            position = selected->childCount();
         } else {
-            parent = selected_->parent();
-            position = indexInParent(*selected_) + 1;
+            parent = selected->parent();
+            position = indexInParent(*selected) + 1;
         }
     }
     LayerNode& added = parent->insertChild(position, std::move(layer));
-    selected_ = &added;
+    selected = &added;
     invalidateComposite(root);
 }
 
 void LayersPanel::draw(PanelContext& ctx) {
     LayerNode& root = ctx.app.document();
-    if (selected_ && !containsLayer(root, selected_)) selected_ = nullptr;
+    ctx.canvas.validate(root);
+    LayerNode*& selected = ctx.canvas.selectedLayer;
+    const bool canEdit = selected && selected != &root;
+
+    // Blend mode and opacity of the selected layer, above the stack.
+    ImGui::BeginDisabled(!canEdit);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+    if (ImGui::BeginCombo("##Blend", canEdit ? blendModeName(selected->blendMode()) : "Normal")) {
+        for (BlendMode mode : kBlendModes) {
+            if (ImGui::Selectable(blendModeName(mode), selected->blendMode() == mode)) {
+                selected->setBlendMode(mode);
+                invalidateComposite(root);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("Blend mode");
+    ImGui::SameLine();
+    float opacity = canEdit ? selected->opacity() * 100.0f : 100.0f;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::SliderFloat("##Opacity", &opacity, 0.0f, 100.0f, "Opacity %.0f%%") && canEdit) {
+        selected->setOpacity(opacity / 100.0f);
+        invalidateComposite(root);
+    }
+    ImGui::EndDisabled();
+
+    // Stack, top to bottom.
+    const float toolbarHeight = ImGui::GetFrameHeightWithSpacing();
+    const float listHeight = std::max(ImGui::GetContentRegionAvail().y - toolbarHeight, ImGui::GetFrameHeightWithSpacing() * 3.0f);
+    if (ImGui::BeginChild("##LayerList", ImVec2(0.0f, listHeight), ImGuiChildFlags_Borders)) {
+        ImGui::TextDisabled("%s  |  %u x %u", root.name().c_str(), ctx.app.canvasWidth(), ctx.app.canvasHeight());
+        for (std::size_t i = root.childCount(); i-- > 0;) drawLayerRow(ctx, root.child(i), 0);
+    }
+    ImGui::EndChild();
 
     // Toolbar: add, delete, reorder.
     if (ImGui::Button("+ Add")) ImGui::OpenPopup("##AddLayer");
     drawAddMenu(ctx);
     ImGui::SameLine();
-    const bool canEdit = selected_ && selected_ != &root;
-    const bool canDelete = canEdit && rasterCount(root, selected_) > 0;
+    const bool canDelete = canEdit && rasterCount(root, selected) > 0;
     ImGui::BeginDisabled(!canDelete);
     if (ImGui::Button("Delete")) {
-        LayerNode* parent = selected_->parent();
-        parent->removeChild(*selected_);  // destroyed here
-        selected_ = parent == &root ? nullptr : parent;
+        LayerNode* parent = selected->parent();
+        parent->removeChild(*selected);  // destroyed here
+        selected = parent == &root ? nullptr : parent;
         invalidateComposite(root);
     }
     ImGui::EndDisabled();
     if (canEdit && !canDelete) ImGui::SetItemTooltip("The document keeps at least one raster layer");
     ImGui::SameLine();
-    const std::size_t position = canEdit ? indexInParent(*selected_) : 0;
-    ImGui::BeginDisabled(!canEdit || position + 1 >= (canEdit ? selected_->parent()->childCount() : 0));
+    const bool editable = selected && selected != &root;  // the selection may have just been deleted
+    const std::size_t position = editable ? indexInParent(*selected) : 0;
+    ImGui::BeginDisabled(!editable || position + 1 >= (editable ? selected->parent()->childCount() : 0));
     if (ImGui::ArrowButton("##Raise", ImGuiDir_Up)) {
-        selected_->parent()->moveChild(position, position + 1);  // children are ordered bottom to top
+        selected->parent()->moveChild(position, position + 1);  // children are ordered bottom to top
         invalidateComposite(root);
     }
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Move up");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!canEdit || position == 0);
+    ImGui::BeginDisabled(!editable || position == 0);
     if (ImGui::ArrowButton("##Lower", ImGuiDir_Down)) {
-        selected_->parent()->moveChild(position, position - 1);
+        selected->parent()->moveChild(position, position - 1);
         invalidateComposite(root);
     }
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Move down");
-
-    // Stack, top to bottom.
-    const float listHeight = std::max(ImGui::GetContentRegionAvail().y * 0.5f, ImGui::GetFrameHeightWithSpacing() * 4.0f);
-    if (ImGui::BeginChild("##LayerList", ImVec2(0.0f, listHeight), ImGuiChildFlags_Borders)) {
-        ImGui::TextDisabled("%s", root.name().c_str());
-        for (std::size_t i = root.childCount(); i-- > 0;) drawLayerRow(ctx, root.child(i), 0);
-    }
-    ImGui::EndChild();
-
-    if (selected_) {
-        drawProperties(ctx, *selected_);
-    } else {
-        ImGui::TextDisabled("Select a layer to edit its properties.");
-    }
 }
 
 void LayersPanel::drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth) {
@@ -270,9 +265,9 @@ void LayersPanel::drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth) {
     std::snprintf(suffix, sizeof suffix, "%s%3.0f%%", layer.mask() ? "[mask] " : "", layer.opacity() * 100.0f);
     const float suffixWidth = ImGui::CalcTextSize(suffix).x;
     ImGui::AlignTextToFramePadding();
-    if (ImGui::Selectable(layer.name().c_str(), selected_ == &layer, ImGuiSelectableFlags_AllowOverlap,
+    if (ImGui::Selectable(layer.name().c_str(), ctx.canvas.selectedLayer == &layer, ImGuiSelectableFlags_AllowOverlap,
                           ImVec2(std::max(ImGui::GetContentRegionAvail().x - suffixWidth - 8.0f, 20.0f), 0.0f))) {
-        selected_ = &layer;
+        ctx.canvas.selectedLayer = &layer;
     }
     ImGui::SameLine();
     ImGui::TextDisabled("%s", suffix);
@@ -326,9 +321,21 @@ void LayersPanel::drawAddMenu(PanelContext& ctx) {
     ImGui::EndPopup();
 }
 
-void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
+// -----------------------------------------------------------------------------
+// Properties
+// -----------------------------------------------------------------------------
+
+void PropertiesPanel::draw(PanelContext& ctx) {
     LayerNode& root = ctx.app.document();
-    ImGui::SeparatorText("Properties");
+    ctx.canvas.validate(root);
+    if (!ctx.canvas.selectedLayer) {
+        ImGui::TextDisabled("Select a layer in the Layers panel to edit its properties.");
+        return;
+    }
+    LayerNode& layer = *ctx.canvas.selectedLayer;
+    const LayerStyle style = layerStyle(layer.type());
+    ImGui::TextDisabled("%s", style.description);
+
     if (!ImGui::BeginTable("##LayerProperties", 2, ImGuiTableFlags_SizingStretchProp)) return;
     ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 4.5f);
     ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
@@ -347,23 +354,6 @@ void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
     if (ImGui::InputText("##Name", name, sizeof name)) layer.setName(name);
 
     if (&layer != &root) {
-        row("Blend");
-        if (ImGui::BeginCombo("##Blend", blendModeName(layer.blendMode()))) {
-            for (BlendMode mode : {BlendMode::NORMAL, BlendMode::MULTIPLY, BlendMode::SCREEN, BlendMode::OVERLAY,
-                                   BlendMode::COLOR_DODGE}) {
-                if (ImGui::Selectable(blendModeName(mode), layer.blendMode() == mode)) {
-                    layer.setBlendMode(mode);
-                    invalidateComposite(root);
-                }
-            }
-            ImGui::EndCombo();
-        }
-        row("Opacity");
-        float opacity = layer.opacity() * 100.0f;
-        if (ImGui::SliderFloat("##Opacity", &opacity, 0.0f, 100.0f, "%.0f%%")) {
-            layer.setOpacity(opacity / 100.0f);
-            invalidateComposite(root);
-        }
         row("Mask");
         if (!layer.mask()) {
             if (ImGui::SmallButton("Add Mask")) {
@@ -381,6 +371,23 @@ void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
                 layer.removeMask();
                 invalidateComposite(root);
             }
+        }
+        // Develop masks (Masking panel) double as layer masks.
+        ImGui::SameLine();
+        if (ImGui::SmallButton("From Mask...")) ImGui::OpenPopup("##FromDevelopMask");
+        ImGui::SetItemTooltip("Replace the layer mask with a mask from the Masking panel");
+        if (ImGui::BeginPopup("##FromDevelopMask")) {
+            ctx.masking.masks.sync(ctx.app, ctx.frame.frameIndex);
+            const std::vector<LocalAdjustment>& masks = ctx.masking.masks.values().masks;
+            if (masks.empty()) ImGui::TextDisabled("No masks yet: add one in the Masking panel");
+            for (std::size_t i = 0; i < masks.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                if (ImGui::MenuItem(masks[i].name.c_str())) {
+                    applyMaskToLayer(masks[i], layer, root, ctx.app.canvasWidth(), ctx.app.canvasHeight());
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndPopup();
         }
     }
 
@@ -408,26 +415,6 @@ void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
         ImGui::Text("%zu layer%s, isolated", layer.childCount(), layer.childCount() == 1 ? "" : "s");
     }
     ImGui::EndTable();
-}
-
-// -----------------------------------------------------------------------------
-// Adjustments
-// -----------------------------------------------------------------------------
-
-void AdjustmentsPanel::draw(PanelContext& ctx) {
-    const AssetRecord* asset = ctx.library.findAsset(ctx.app.activeAssetId());
-    ImGui::TextDisabled("Develop  |  %s", asset ? asset->fileName.c_str() : "document (no photo open)");
-    ImGui::Spacing();
-
-    if (ImGui::CollapsingHeader("Basic", ImGuiTreeNodeFlags_DefaultOpen)) basic_.draw(ctx);
-    if (ImGui::CollapsingHeader("Color Mixer (HSL)", ImGuiTreeNodeFlags_DefaultOpen)) mixer_.draw(ctx);
-    if (ImGui::CollapsingHeader("Color Grading", ImGuiTreeNodeFlags_DefaultOpen)) grading_.draw(ctx);
-    if (ImGui::CollapsingHeader("Detail", ImGuiTreeNodeFlags_DefaultOpen)) detail_.draw(ctx);
-
-    ImGui::Spacing();
-    ImGui::PushTextWrapPos();
-    ImGui::TextDisabled("Every control runs live on the GPU develop graph and is saved with the photo when released.");
-    ImGui::PopTextWrapPos();
 }
 
 }  // namespace darkhouse::ui
