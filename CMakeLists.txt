@@ -108,6 +108,7 @@ add_executable(DarkHouse
     src/main.cpp
     src/app_controller.cpp
     src/asset_manager.cpp
+    src/import_scan.cpp
     src/vulkan_context.cpp
     src/swapchain.cpp
     src/render_pipeline.cpp
@@ -115,6 +116,7 @@ add_executable(DarkHouse
     src/ai_segmentation.cpp
     include/app_controller.hpp
     include/asset_manager.hpp
+    include/import_scan.hpp
     include/vulkan_context.hpp
     include/vulkan_utils.hpp
     include/swapchain.hpp

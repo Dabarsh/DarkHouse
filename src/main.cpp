@@ -2,6 +2,7 @@
 // application controller.
 
 #include "app_controller.hpp"
+#include "import_scan.hpp"
 
 #ifdef DARKHOUSE_WITH_GUI
 #include "gui_engine.hpp"
@@ -73,40 +74,6 @@ void printUsage(std::ostream& out) {
            "                          env DARKHOUSE_VULKAN_VALIDATION=0/1 overrides the build default)\n"
            "  --no-validation         disable Vulkan validation layers\n"
            "  --version, --help\n";
-}
-
-bool isSupportedImage(const fs::path& path) {
-    static constexpr std::string_view kExtensions[] = {
-        ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw",
-        ".orf", ".rw2", ".raf", ".pef", ".srw", ".heic", ".heif", ".avif", ".webp", ".exr"};
-    std::string ext = path.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return std::find(std::begin(kExtensions), std::end(kExtensions), ext) != std::end(kExtensions);
-}
-
-// Expands the --import arguments into absolute file paths. Directories are
-// walked recursively and only files with image extensions are kept.
-std::vector<std::string> expandImportPaths(const std::vector<std::string>& arguments) {
-    std::vector<std::string> files;
-    for (const std::string& argument : arguments) {
-        std::error_code ec;
-        const fs::path path = fs::absolute(argument, ec);
-        if (ec) {
-            std::cerr << "warning: cannot resolve '" << argument << "': " << ec.message() << '\n';
-            continue;
-        }
-        if (fs::is_directory(path, ec)) {
-            const auto options = fs::directory_options::skip_permission_denied;
-            for (auto it = fs::recursive_directory_iterator(path, options, ec);
-                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-                if (it->is_regular_file(ec) && isSupportedImage(it->path())) files.push_back(it->path().string());
-            }
-            if (ec) std::cerr << "warning: stopped scanning '" << path.string() << "': " << ec.message() << '\n';
-        } else {
-            files.push_back(path.string());  // the importer reports missing/unreadable files
-        }
-    }
-    return files;
 }
 
 // Unix seconds -> "YYYY-MM-DD HH:MM" (UTC), using Hinnant's civil_from_days.
@@ -331,7 +298,9 @@ int main(int argc, char** argv) {
         std::signal(SIGTERM, onInterrupt);
 
         if (!cli->importArguments.empty()) {
-            const std::vector<std::string> files = expandImportPaths(cli->importArguments);
+            const ImportScan scan = scanImportPaths(cli->importArguments);
+            for (const std::string& warning : scan.warnings) std::cerr << "warning: " << warning << '\n';
+            const std::vector<std::string>& files = scan.files;
             std::clog << "[DarkHouse] info: queued " << files.size() << " file(s) for import\n";
             app.postEvent(ImportFilesEvent{files});
         }
