@@ -92,6 +92,8 @@ void DarkHouseApp::initialize() {
     // 3. GPU and AI are optional, and each degrades on its own.
     if (config_.enableGpu) {
         initializeGpu();
+    } else if (frontEnd_->requiresGpu()) {
+        throw std::runtime_error("the desktop UI needs the GPU; use --headless together with --no-gpu");
     } else {
         logLine("info", "GPU disabled by configuration");
     }
@@ -105,11 +107,35 @@ void DarkHouseApp::initializeGpu() {
     try {
         VulkanContextOptions options;
         options.enableValidation = config_.enableValidationLayers;
+        frontEnd_->configureGpu(options);
         gpu_ = std::make_unique<VulkanContext>(options);
         if (config_.enableValidationLayers && !gpu_->validationEnabled()) {
             logLine("warn", "validation requested but VK_LAYER_KHRONOS_validation could not be loaded; continuing without it");
         }
+        logLine("info", "GPU: ", gpu_->deviceName(), gpu_->validationEnabled() ? " (validation layers on)" : "",
+            gpu_->presentationEnabled() ? ", presenting" : ", headless");
+    } catch (const std::exception& e) {
+        if (frontEnd_->requiresGpu()) {
+            throw std::runtime_error(std::string("the desktop UI needs a Vulkan 1.3 device that can present to a window: ") +
+                                     e.what());
+        }
+        logLine("warn", "GPU unavailable, canvas rendering disabled: ", e.what());
+        disableGpu();
+        return;
+    }
 
+    // Canvas and develop graph are optional on top of a working context: a
+    // missing shader should cost the canvas, not the whole UI.
+    initializeCanvas();
+
+    // The front-end sets up its swapchain and renderer last. If that fails the
+    // context is still torn down cleanly by the caller's exception path.
+    frontEnd_->attachGpu(*this, *gpu_);
+    frontEndAttached_ = true;
+}
+
+void DarkHouseApp::initializeCanvas() {
+    try {
         canvasTexture_ = gpu_->createTexture(config_.canvasWidth, config_.canvasHeight,
                                              PixelFormat::R16G16B16A16_SFLOAT,
                                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -118,11 +144,10 @@ void DarkHouseApp::initializeGpu() {
 
         developGraph_ = std::make_unique<RenderPipelineGraph>();
         rebuildDevelopGraph({});
-        logLine("info", "GPU: ", gpu_->deviceName(), ", canvas ", config_.canvasWidth, "x", config_.canvasHeight,
-            " RGBA16F");
+        logLine("info", "canvas ", config_.canvasWidth, "x", config_.canvasHeight, " RGBA16F");
     } catch (const std::exception& e) {
-        logLine("warn", "GPU unavailable, canvas rendering disabled: ", e.what());
-        disableGpu();
+        logLine("warn", "canvas rendering disabled: ", e.what());
+        disableCanvas();
     }
 }
 
@@ -157,15 +182,27 @@ void DarkHouseApp::initializeAi() {
     }
 }
 
-void DarkHouseApp::disableGpu() noexcept {
+void DarkHouseApp::disableCanvas() noexcept {
+    if (gpu_) gpu_->waitIdle();  // in-flight UI frames may still sample the canvas
     developGraph_.reset();
     if (gpu_) gpu_->destroyTexture(canvasTexture_);
+    ++canvasGeneration_;
+}
+
+void DarkHouseApp::disableGpu() noexcept {
+    if (frontEndAttached_ && frontEnd_) frontEnd_->detachGpu();
+    frontEndAttached_ = false;
+    disableCanvas();
     gpu_.reset();
 }
 
 void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editStack) {
     if (!gpu_ || !developGraph_) return;
+    // Clearing destroys the nodes' output images, which UI frames still in
+    // flight may be sampling.
+    gpu_->waitIdle();
     developGraph_->clear();
+    ++canvasGeneration_;
 
     // A develop stack is a linear chain: canvas -> node 0 -> node 1 -> ...
     // An empty stack still gets an identity exposure node, so the canvas always
@@ -212,21 +249,29 @@ int DarkHouseApp::run() {
         pollImports();
 
         frame.mode = mode();
-        if (showsCanvas(frame.mode) && gpu_) {
+        if (showsCanvas(frame.mode) && developGraph_) {
             try {
                 uploadDirtyCanvasTiles();
                 renderFrame(frame);
             } catch (const std::exception& e) {
                 logLine("error", "GPU frame failed, disabling canvas rendering: ", e.what());
-                disableGpu();
+                disableCanvas();
                 frame.canvasOutput = nullptr;
             }
         }
+        frame.canvasGeneration = canvasGeneration_;
         frontEnd_->drawFrame(*this, frame);
         ++summary_.frames;
 
         if (config_.maxFrames && summary_.frames >= *config_.maxFrames) break;
         if (config_.exitWhenIdle && !frontEnd_->interactive() && idle()) break;
+
+        // Presentation already blocks on vsync; sleeping as well would halve
+        // the frame rate whenever the two clocks drift apart.
+        if (frontEnd_->pacesFrames()) {
+            nextDeadline = Clock::now();
+            continue;
+        }
 
         // Fixed-rate pacing. After a stall, skip ahead instead of catching up.
         nextDeadline += framePeriod;
@@ -324,6 +369,7 @@ void DarkHouseApp::pollImports() {
 }
 
 void DarkHouseApp::uploadDirtyCanvasTiles() {
+    if (!gpu_) return;
     const std::vector<TileKey> dirty = takeDirtyTiles(*document_);
     if (dirty.empty()) return;
 

@@ -144,7 +144,11 @@ set_target_properties(DarkHouse PROPERTIES
 if(DARKHOUSE_GUI)
     target_sources(DarkHouse PRIVATE
         src/platform_window.cpp
-        include/platform_window.hpp)
+        src/gui_engine.cpp
+        src/ui/shell.cpp
+        include/platform_window.hpp
+        include/gui_engine.hpp
+        include/ui/shell.hpp)
     target_link_libraries(DarkHouse PRIVATE DarkHouse::imgui glfw glm::glm)
     target_compile_definitions(DarkHouse PRIVATE DARKHOUSE_WITH_GUI=1)
 endif()

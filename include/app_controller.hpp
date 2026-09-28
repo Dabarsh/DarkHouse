@@ -7,8 +7,9 @@
 //   -> front-end draws and presents -> pace to the target frame rate
 //
 // The windowing/UI layer sits behind the FrontEnd interface. The Dear ImGui +
-// Vulkan swapchain front-end plugs in there. The built-in headless front-end
-// runs the same engine loop for batch jobs and CI.
+// Vulkan swapchain front-end (GuiEngine) plugs in there and shares the
+// engine's VulkanContext. The built-in headless front-end runs the same engine
+// loop for batch jobs and CI.
 #pragma once
 
 #include "ai_segmentation.hpp"
@@ -79,6 +80,10 @@ struct FrameContext {
     double deltaSeconds = 0.0;
     AppMode mode = AppMode::CATALOG;
     const GPUTexture* canvasOutput = nullptr;  // developed canvas, when rendered this frame
+    // Changes whenever canvasOutput may refer to a different image (develop
+    // graph rebuilt or disabled). Image views can be recycled with the same
+    // handle value, so front-ends key cached descriptors on this, not the view.
+    std::uint64_t canvasGeneration = 0;
 };
 
 struct RunSummary {
@@ -91,9 +96,24 @@ struct RunSummary {
 class DarkHouseApp;
 
 // The seam between the engine and the windowing/UI layer.
+//
+// GPU lifecycle, driven by DarkHouseApp:
+//   configureGpu(options)  before the VulkanContext is created (add a surface)
+//   attachGpu(app, gpu)    once the context exists (create swapchain, UI renderer)
+//   ... frames ...
+//   detachGpu()            before the context is destroyed (release everything)
 class FrontEnd {
 public:
     virtual ~FrontEnd() = default;
+
+    // Lets the front-end request presentation support from the context.
+    virtual void configureGpu(VulkanContextOptions& /*options*/) {}
+    // True when the front-end cannot run without a GPU (initialize() then fails
+    // instead of falling back to catalog-only mode).
+    [[nodiscard]] virtual bool requiresGpu() const noexcept { return false; }
+    virtual void attachGpu(DarkHouseApp& /*app*/, VulkanContext& /*gpu*/) {}
+    virtual void detachGpu() noexcept {}
+
     // Turns pending OS/window input into AppEvents. Returns false once the user
     // has closed the window.
     virtual bool pumpPlatformEvents(DarkHouseApp& app) = 0;
@@ -101,6 +121,9 @@ public:
     virtual void drawFrame(DarkHouseApp& app, const FrameContext& frame) = 0;
     // False when nobody can post events, so exitWhenIdle may end the run.
     [[nodiscard]] virtual bool interactive() const noexcept = 0;
+    // True when presentation already blocks to the display rate (vsync), so
+    // the frame loop must not add its own sleep on top.
+    [[nodiscard]] virtual bool pacesFrames() const noexcept { return false; }
 };
 
 class DarkHouseApp {
@@ -128,6 +151,11 @@ public:
 
     [[nodiscard]] AppMode mode() const noexcept { return mode_.load(); }
     [[nodiscard]] bool gpuAvailable() const noexcept { return gpu_ != nullptr; }
+    // The develop graph and canvas texture exist (GPU up and shaders loaded).
+    [[nodiscard]] bool canvasAvailable() const noexcept { return developGraph_ != nullptr; }
+    [[nodiscard]] const VulkanContext* gpu() const noexcept { return gpu_.get(); }
+    [[nodiscard]] const std::string& activeAssetId() const noexcept { return activeAssetId_; }
+    [[nodiscard]] std::size_t pendingImportCount() const noexcept { return pendingImports_.size(); }
     [[nodiscard]] AssetManager& assets();
     [[nodiscard]] LayerNode& document();
     [[nodiscard]] const AppConfig& config() const noexcept { return config_; }
@@ -135,8 +163,10 @@ public:
 
 private:
     void initializeGpu();
+    void initializeCanvas();
     void initializeAi();
-    void disableGpu() noexcept;
+    void disableCanvas() noexcept;  // drops the develop graph and canvas, keeps the context
+    void disableGpu() noexcept;     // detaches the front-end, then drops everything
     void rebuildDevelopGraph(const std::vector<EditNodeRecord>& editStack);
 
     // Frame phases
@@ -164,6 +194,8 @@ private:
     GPUTexture canvasTexture_;
     std::unique_ptr<RenderPipelineGraph> developGraph_;
     bool graphDirty_ = true;
+    std::uint64_t canvasGeneration_ = 0;
+    bool frontEndAttached_ = false;
 
     std::vector<std::pair<std::string, std::future<AssetRecord>>> pendingImports_;
     std::string activeAssetId_;

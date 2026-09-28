@@ -3,6 +3,11 @@
 
 #include "app_controller.hpp"
 
+#ifdef DARKHOUSE_WITH_GUI
+#include "gui_engine.hpp"
+#include "ui/shell.hpp"
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -14,6 +19,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -43,6 +49,8 @@ void printUsage(std::ostream& out) {
            "\n"
            "Usage: DarkHouse [options]\n"
            "\n"
+           "Opens the desktop UI unless --headless is given (or no display is available).\n"
+           "\n"
            "  --catalog <file>        catalog database (default: darkhouse_catalog.sqlite)\n"
            "  --import <path>...      import files; directories are scanned recursively\n"
            "  --query <filter>        after the run, list assets matching a SQL filter over aliases\n"
@@ -54,8 +62,13 @@ void printUsage(std::ostream& out) {
            "  --canvas <W>x<H>        document size in pixels (default 2048x2048)\n"
            "  --shaders <dir>         directory containing compiled *.spv shaders\n"
            "  --models <dir>          directory containing *_segmentation.onnx models\n"
-           "  --frames <n>            run exactly n frames instead of exiting when idle\n"
-           "  --no-gpu                skip Vulkan initialization\n"
+           "  --frames <n>            run exactly n frames, then exit (headless: instead of exiting when idle)\n"
+           "  --headless              no window: run the queued work and exit once it drains\n"
+           "  --window <W>x<H>        initial window size (default 1600x1000)\n"
+           "  --maximized             open the window maximized\n"
+           "  --no-vsync              present without waiting for the display refresh\n"
+           "  --viewports             allow dragging panels out into their own OS windows\n"
+           "  --no-gpu                skip Vulkan initialization (implies --headless)\n"
            "  --validation            enable Vulkan validation layers (default in Debug builds;\n"
            "                          env DARKHOUSE_VULKAN_VALIDATION=0/1 overrides the build default)\n"
            "  --no-validation         disable Vulkan validation layers\n"
@@ -140,6 +153,12 @@ struct CommandLine {
     std::optional<std::string> query;
     std::vector<std::pair<std::string, int>> ratings;
     std::optional<std::string> openAssetId;
+    bool headless = false;
+    int windowWidth = 1600;
+    int windowHeight = 1000;
+    bool maximized = false;
+    bool vsync = true;
+    bool multiViewport = false;
     bool help = false;
     bool version = false;
 };
@@ -226,8 +245,25 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
             const unsigned long long frames = v ? std::strtoull(v->c_str(), &end, 10) : 0;
             if (!v || frames == 0 || *end != '\0') return fail("--frames needs a positive integer");
             cli.config.maxFrames = frames;
+        } else if (arg == "--headless") {
+            cli.headless = true;
+        } else if (arg == "--window") {
+            const auto v = value();
+            unsigned w = 0, h = 0;
+            if (!v || std::sscanf(v->c_str(), "%ux%u", &w, &h) != 2 || w < 640 || h < 400 || w > 16384 || h > 16384) {
+                return fail("--window needs <W>x<H>, at least 640x400");
+            }
+            cli.windowWidth = static_cast<int>(w);
+            cli.windowHeight = static_cast<int>(h);
+        } else if (arg == "--maximized") {
+            cli.maximized = true;
+        } else if (arg == "--no-vsync") {
+            cli.vsync = false;
+        } else if (arg == "--viewports") {
+            cli.multiViewport = true;
         } else if (arg == "--no-gpu") {
             cli.config.enableGpu = false;
+            cli.headless = true;  // the UI renders with Vulkan
         } else if (arg == "--validation") {
             cli.config.enableValidationLayers = true;
         } else if (arg == "--no-validation") {
@@ -237,11 +273,34 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
         }
     }
 
-    // Only the headless front-end exists so far, so unless a frame count is
-    // given, run the requested work and exit once it drains.
+#ifndef DARKHOUSE_WITH_GUI
+    cli.headless = true;  // built with -DDARKHOUSE_GUI=OFF
+#endif
+    // Headless runs do the requested work and exit once it drains, unless a
+    // frame count is given. (The UI is interactive and never exits when idle.)
     cli.config.exitWhenIdle = !cli.config.maxFrames.has_value();
     return cli;
 }
+
+#ifdef DARKHOUSE_WITH_GUI
+// Opens the DarkHouse window. Returns nullptr (and logs why) when no window
+// can be created, e.g. over SSH without a display; the caller then runs headless.
+std::unique_ptr<FrontEnd> createDesktopFrontEnd(const CommandLine& cli) {
+    try {
+        GuiOptions options;
+        options.window.title = "DarkHouse";
+        options.window.width = cli.windowWidth;
+        options.window.height = cli.windowHeight;
+        options.window.maximized = cli.maximized;
+        options.vsync = cli.vsync;
+        options.multiViewport = cli.multiViewport;
+        return std::make_unique<GuiEngine>(std::move(options), std::make_unique<ui::DarkHouseShell>());
+    } catch (const std::exception& e) {
+        std::clog << "[DarkHouse] warn: cannot open the DarkHouse window (" << e.what() << "); running headless\n";
+        return nullptr;
+    }
+}
+#endif
 
 }  // namespace
 
@@ -260,6 +319,11 @@ int main(int argc, char** argv) {
     int exitCode = 0;
     try {
         DarkHouseApp app(cli->config);
+#ifdef DARKHOUSE_WITH_GUI
+        if (!cli->headless) {
+            if (std::unique_ptr<FrontEnd> gui = createDesktopFrontEnd(*cli)) app.setFrontEnd(std::move(gui));
+        }
+#endif
         app.initialize();
 
         g_app.store(&app);
