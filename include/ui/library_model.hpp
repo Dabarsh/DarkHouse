@@ -16,16 +16,16 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <ctime>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace darkhouse::ui {
 
 enum class CollectionKind : std::uint8_t {
     ALL,
-    IMPORTED_THIS_SESSION,
+    IMPORTED_THIS_SESSION,  // imported (or re-imported) by this process
     PICKS,
     REJECTED,
     UNRATED,
@@ -124,7 +124,7 @@ private:
 
     std::uint64_t loadedRevision_ = ~std::uint64_t{0};
     std::chrono::steady_clock::time_point lastReload_{};
-    std::int64_t sessionStart_ = 0;
+    std::unordered_set<std::string> sessionImports_;
     std::string lastError_;
 };
 

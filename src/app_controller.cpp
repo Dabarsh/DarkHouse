@@ -400,6 +400,7 @@ void DarkHouseApp::pollImports() {
             const AssetRecord record = it->second.get();
             ++summary_.importsSucceeded;
             ++catalogRevision_;
+            sessionImports_.push_back(record.id);
             std::ostringstream detail;
             if (record.width > 0) detail << ' ' << record.width << 'x' << record.height;
             if (record.metadata.cameraModel) detail << ", " << *record.metadata.cameraModel;

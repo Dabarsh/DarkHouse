@@ -63,7 +63,7 @@ FolderNode toFolderNode(const std::string& name, const fs::path& path, const Fol
 
 }  // namespace
 
-LibraryModel::LibraryModel() : counts_(kCollectionKinds, 0), sessionStart_(static_cast<std::int64_t>(std::time(nullptr))) {}
+LibraryModel::LibraryModel() : counts_(kCollectionKinds, 0) {}
 
 void LibraryModel::setCollection(CollectionRef collection) {
     if (collection == collection_) return;
@@ -119,6 +119,8 @@ void LibraryModel::reload(DarkHouseApp& app) {
     } catch (const std::exception& e) {
         lastError_ = e.what();
     }
+    sessionImports_.clear();
+    sessionImports_.insert(app.sessionImports().begin(), app.sessionImports().end());
     loadedRevision_ = app.catalogRevision();
     lastReload_ = std::chrono::steady_clock::now();
     rebuildDerived();
@@ -154,13 +156,19 @@ void LibraryModel::rebuildDerived() {
         folders_.count = top.count;
         folders_.children.push_back(std::move(top));
     }
+    // Top-level entries carry their full location in `path` (shown as a
+    // tooltip); the label is just the folder's own name.
+    for (FolderNode& top : folders_.children) {
+        const std::string leaf = fs::path(top.path).filename().string();
+        if (!leaf.empty()) top.name = leaf;
+    }
 }
 
 bool LibraryModel::inCollection(const AssetRecord& asset, const CollectionRef& collection) const {
     const AssetMetadata& m = asset.metadata;
     switch (collection.kind) {
     case CollectionKind::ALL: return true;
-    case CollectionKind::IMPORTED_THIS_SESSION: return asset.dateImported >= sessionStart_;
+    case CollectionKind::IMPORTED_THIS_SESSION: return sessionImports_.count(asset.id) > 0;
     case CollectionKind::PICKS: return asset.flag == AssetFlag::PICKED;
     case CollectionKind::REJECTED: return asset.flag == AssetFlag::REJECTED;
     case CollectionKind::UNRATED: return asset.rating == 0;

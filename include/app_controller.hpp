@@ -179,6 +179,9 @@ public:
     // Increments whenever the catalog may have changed (import finished,
     // rating, flag or label written), so views know when to re-query.
     [[nodiscard]] std::uint64_t catalogRevision() const noexcept { return catalogRevision_; }
+    // Ids of assets imported by this process, in completion order (a
+    // re-import of known content yields the existing id).
+    [[nodiscard]] const std::vector<std::string>& sessionImports() const noexcept { return sessionImports_; }
     [[nodiscard]] std::size_t pendingImportCount() const noexcept { return pendingImports_.size(); }
     [[nodiscard]] AssetManager& assets();
     [[nodiscard]] LayerNode& document();
@@ -228,6 +231,7 @@ private:
     std::string activeAssetId_;
     std::vector<EditNodeRecord> developStack_;
     std::uint64_t catalogRevision_ = 0;
+    std::vector<std::string> sessionImports_;
 
     mutable std::mutex eventMutex_;
     std::deque<AppEvent> events_;  // guarded by eventMutex_
