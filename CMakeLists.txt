@@ -283,6 +283,10 @@ if(DARKHOUSE_BUILD_TESTS)
         target_link_libraries(darkhouse_present_smoke PRIVATE darkhouse_gui)
         darkhouse_apply_build_flags(darkhouse_present_smoke)
         add_test(NAME present_smoke COMMAND darkhouse_present_smoke --frames 120 --resize)
-        set_tests_properties(present_smoke PROPERTIES SKIP_RETURN_CODE 77 LABELS "gui;vulkan" TIMEOUT 120)
+        # Synchronization validation on top of core validation: it catches
+        # hazards (e.g. layout transitions vs. present) that core checks miss.
+        set_tests_properties(present_smoke PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "gui;vulkan" TIMEOUT 120
+            ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
     endif()
 endif()

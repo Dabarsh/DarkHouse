@@ -284,9 +284,15 @@ std::optional<SwapchainFrame> Swapchain::beginFrame(VkExtent2D framebufferExtent
 
 void Swapchain::endFrame(const SwapchainFrame& frame) {
     FrameSync& sync = frames_[frame.frameSlot];
+    // The layout transition must happen-before the render-finished semaphore
+    // signal that the present waits on, so the barrier's second scope has to
+    // contain the signal's stage. With dstStageMask = NONE nothing orders the
+    // transition before the signal, and presentation could read the image
+    // mid-transition (sync validation: SYNC-HAZARD-PRESENT-AFTER-WRITE).
+    constexpr VkPipelineStageFlags2 kSignalStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     transitionImage(frame.commandBuffer, frame.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, kSignalStage, VK_ACCESS_2_NONE);
     checkVk(vkEndCommandBuffer(frame.commandBuffer), "vkEndCommandBuffer (frame)");
 
     VkSemaphoreSubmitInfo waitInfo{};
@@ -296,7 +302,7 @@ void Swapchain::endFrame(const SwapchainFrame& frame) {
     VkSemaphoreSubmitInfo signalInfo{};
     signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
     signalInfo.semaphore = renderFinished_[frame.imageIndex];
-    signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signalInfo.stageMask = kSignalStage;
     VkCommandBufferSubmitInfo commandInfo{};
     commandInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
     commandInfo.commandBuffer = frame.commandBuffer;
