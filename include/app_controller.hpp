@@ -245,6 +245,9 @@ public:
     // A develop evaluation is running on the GPU, or an edit is waiting for
     // the next one (the canvas is visible). Front-ends keep drawing meanwhile.
     [[nodiscard]] bool developBusy() const noexcept;
+    // Develop evaluations submitted so far. Edits made while one runs are
+    // coalesced into the next, so this grows by at most one per frame.
+    [[nodiscard]] std::uint64_t developEvaluations() const noexcept { return developEvaluations_; }
     // Increments whenever the catalog may have changed (import finished,
     // rating, flag or label written), so views know when to re-query.
     [[nodiscard]] std::uint64_t catalogRevision() const noexcept { return catalogRevision_; }
@@ -305,6 +308,7 @@ private:
     std::unique_ptr<RenderPipelineGraph> developGraph_;
     std::vector<RenderPipelineGraph::NodeTiming> developTimings_;
     VulkanContext::Submission developSubmission_;  // the develop evaluation in flight, if any
+    std::uint64_t developEvaluations_ = 0;
     int maskOverlay_ = -1;                          // mask shown as an overlay (SetMaskOverlayEvent)
     DisplayChannel displayChannel_ = DisplayChannel::COLOR;  // SetDisplayChannelEvent
     bool graphDirty_ = true;

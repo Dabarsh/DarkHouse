@@ -436,5 +436,17 @@ if(DARKHOUSE_BUILD_TESTS)
         set_tests_properties(present_smoke PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "gui;vulkan" TIMEOUT 120
             ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
+
+        # The desktop shell end to end: workspace tabs, the colour pipeline
+        # against its CPU references, and frame pacing during a slider drag.
+        add_executable(darkhouse_workspace_gui_test tests/workspace_gui_test.cpp)
+        target_link_libraries(darkhouse_workspace_gui_test PRIVATE darkhouse_gui darkhouse_stb)
+        target_compile_definitions(darkhouse_workspace_gui_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+        target_include_directories(darkhouse_workspace_gui_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
+        darkhouse_apply_build_flags(darkhouse_workspace_gui_test)
+        add_test(NAME workspace_gui COMMAND darkhouse_workspace_gui_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
+        set_tests_properties(workspace_gui PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "gui;vulkan;color" TIMEOUT 300
+            ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
     endif()
 endif()

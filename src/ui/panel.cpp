@@ -58,6 +58,8 @@ void EnginePanel::draw(PanelContext& ctx) {
     ImGui::Text("Engine frame: %llu, dt %.2f ms", static_cast<unsigned long long>(ctx.frame.frameIndex),
                 ctx.frame.deltaSeconds * 1000.0);
     ImGui::Text("Canvas: %s", ctx.app.canvasAvailable() ? "GPU develop graph" : "unavailable");
+    ImGui::Text("Develop evaluations: %llu%s", static_cast<unsigned long long>(ctx.app.developEvaluations()),
+                ctx.app.developBusy() ? " (one in flight)" : "");
     if (ctx.app.canvasAvailable()) {
         ImGui::Text("Document: %u x %u", ctx.app.canvasWidth(), ctx.app.canvasHeight());
         const auto& timings = ctx.app.developTimings();

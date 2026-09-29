@@ -642,6 +642,7 @@ void DarkHouseApp::renderFrame(FrameContext& frame) {
         developSubmission_ =
             gpu_->submitAsync([this](VkCommandBuffer commandBuffer) { developGraph_->evaluateGraph(commandBuffer); });
         graphDirty_ = false;
+        ++developEvaluations_;
     }
     const std::vector<RenderPipelineGraph::NodeId> sinks = developGraph_->sinkNodes();
     if (!sinks.empty()) frame.canvasOutput = &developGraph_->outputOf(sinks.back());

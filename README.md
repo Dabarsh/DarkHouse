@@ -9,7 +9,7 @@ Stack: C++20 · CMake ≥ 3.22 · SQLite 3 (WAL) · Vulkan 1.3 / SPIR-V ·
 GLFW · Dear ImGui (docking, Vulkan backend with dynamic rendering) · GLM ·
 ONNX Runtime
 
-![The Canvas workspace: a test chart rendered through the GPU develop graph, with the layer stack, adjustments, metadata and filmstrip](docs/images/workspace-canvas.png)
+![The Canvas & Compositing workspace: a test chart, a vector ellipse, a curves adjustment layer and a rotated smart object, with the tools, properties and layer stack](docs/images/workspace-canvas.png)
 
 ---
 
@@ -77,19 +77,28 @@ ONNX Runtime
 | `include/import_scan.hpp` | Expands files and folders into importable image paths (CLI `--import`, Import dialog, drag and drop). |
 | `include/vulkan_context.hpp` | `PixelFormat`, `GPUTexture`, `VulkanContext` (instance, device, queue, optional window surface, validation messenger, textures, uploads) and synchronization2 barrier helpers. |
 | `include/swapchain.hpp` | `Swapchain`: present mode and format selection, transparent recreation, per-frame fences and semaphores. |
-| `include/render_pipeline.hpp` | `ComputeNode`, `PointOperatorNode`, `ExposureNode`, `DisplayTransformNode`, `RenderPipelineGraph` (with per-node GPU timestamps). |
+| `include/render_pipeline.hpp` | `ComputeNode`, `PointOperatorNode` (push constants and an optional lookup-table buffer), `ExposureNode`, `DisplayTransformNode` (with channel views), `RenderPipelineGraph` (with per-node GPU timestamps). |
+| `include/develop_stack.hpp` | The canonical develop order (denoise, lens corrections, white balance, exposure, tone curve, HSL, colour grading, local adjustments) and stack helpers. |
+| `include/color_adjust.hpp`, `include/color_nodes.hpp` | White balance, tone, HSL mixer and colour grading: parameters, CPU references and the GPU nodes (`shaders/white_balance.comp`, `hsl_adjust.comp`, `color_grading.comp`, `color_common.glsl`, `tone_common.glsl`). |
+| `include/tone_curve.hpp` | Point tone curves: monotone spline, lookup tables, the CPU reference (`shaders/tone_curve.comp`). |
+| `include/lens_database.hpp`, `include/lens_correction.hpp` | lensfun profile reader and matcher; the lens correction model, CPU reference and GPU node (`shaders/lens_correction.comp`). |
+| `include/mask_engine.hpp`, `include/local_adjust_node.hpp` | Masks for local adjustments (brush, gradients, ranges, AI placeholders), their CPU evaluation, GPU mask generation into RGBA16F array textures, and the masked local adjustment node (`shaders/mask_generate.comp`, `local_adjust.comp`). |
+| `include/adjustment_ops.hpp` | CPU point adjustments for adjustment layers (the develop nodes' references). |
+| `include/raster_paint.hpp` | Brush, eraser and clone dabs on raster layers and masks, and undo snapshots. |
 | `shaders/exposure.comp` | Exposure (EV), highlights/shadows and contrast on RGBA16F storage images, in 16×16 workgroups. |
 | `shaders/display_srgb.comp` | The view transform at the end of the develop graph: scene-linear RGBA16F to dithered sRGB RGBA8 for the viewport. |
 | `include/denoise.hpp`, `include/denoise_node.hpp` | Noise reduction: parameters, the CPU reference, and the GPU `DenoiseNode` (see [Noise reduction](#noise-reduction)). |
 | `shaders/denoise_*.comp`, `shaders/denoise_config.h` | The five denoise passes and the constants they share with the C++ code. |
 | `include/image_decoder.hpp` | `decodeImage()`: JPEG/PNG/TIFF/HDR/..., embedded RAW previews, EXIF orientation, linear-light downscale (see [Live photo preview](#live-photo-preview)). |
-| `include/layer_stack.hpp` | `TILE_SIZE`, FP16 tiles (with F16C bulk conversion), `SparseRasterLayer`, `LayerNode` tree, blend modes, CPU reference compositor. |
+| `include/layer_stack.hpp` | `TILE_SIZE`, FP16 tiles (with F16C bulk conversion), `SparseRasterLayer`, `LayerNode` tree with transforms, 16 blend modes, vector flattening, and the CPU tile compositor (pixels, vectors, adjustment layers, smart objects, mask preview). |
 | `include/ai_segmentation.hpp` | `AISegmentationEngine` (subject/sky) and the ONNX Runtime backend. |
 | `include/app_controller.hpp` | `DarkHouseApp`, `AppMode`, `AppEvent`, and the `FrontEnd` seam (with its GPU lifecycle) for the UI layer. |
 | `include/platform_window.hpp` | `PlatformWindow`: the GLFW window, surface creation, resize/drop/input tracking. |
 | `include/gui_engine.hpp` | `GuiEngine` (the desktop `FrontEnd`) and the `GuiLayer` interface. |
-| `include/ui/shell.hpp` | `DarkHouseShell`: main menu, workspace switcher, status bar, Import dialog. |
-| `include/ui/workspace_layout.hpp` | `WorkspaceLayoutManager`: one dockspace and default layout per workspace. |
+| `include/ui/shell.hpp` | `DarkHouseShell`: main menu, workspace tabs, status bar, Import dialog. |
+| `include/ui/workspace_layout.hpp` | `WorkspaceLayoutManager`: one dockspace and default layout per workspace (Catalog, Develop, Canvas & Compositing, Split), and each dock's selected tab. |
+| `include/ui/develop_sections.hpp`, `include/ui/masking.hpp` | The Develop controls bound to their GPU nodes, and the masking state and viewport tools shared by the Masking panel. |
+| `include/ui/canvas_state.hpp`, `include/ui/canvas_tools.hpp` | The Canvas selection, smart-object loading, channel views, and the canvas tools with undo. |
 | `include/ui/library_model.hpp` | `LibraryModel`: collections, search filter, sort and selection shared by the catalog panels. |
 | `include/ui/panels.hpp` | The dockable panels (see [Desktop UI](#desktop-ui)). |
 | `include/ui/widgets.hpp`, `include/ui/theme.hpp` | Shared widgets (ratings, labels, thumbnail cards, gradient sliders) and the DarkHouse look. |
@@ -156,6 +165,8 @@ the window is narrow) or `Ctrl+1/2/3/4`:
 | **Develop (Lightroom)** | One photo, parametric | Collections + Search / Metadata · Viewport over Filmstrip · Adjustments + Masking |
 | **Canvas & Compositing (Photoshop)** | Layer document | Tools · Viewport (zoom 0.5 % to 25 600 %, pixel grid from 800 %) · Properties + Masking over Layers + Channels + Paths |
 | **Split** | Library + develop | Collections + Search / Metadata · Library grid + Viewport over Filmstrip · Adjustments + Masking |
+
+![The Develop workspace: the photo with a tone curve, the curve editor and the colour mixer in the Adjustments panel, next to Masking](docs/images/workspace-develop.png)
 
 Opening a photo from the Catalog goes to Develop; from any other workspace
 it stays where it is. Masks made in the Masking panel serve both modules:
@@ -381,13 +392,19 @@ ctest --test-dir build --output-on-failure
 | Test | Covers |
 | --- | --- |
 | `library_model` | Runs the engine headless on a temporary catalog: import, collections, folder tree, search, sorting, selection, and rating/flag/label round trips through engine events. |
-| `layer_stack` | F16C bulk conversion against the scalar code (all 65536 halves, ~1M float bit patterns), the single-layer pass-through against the full compositor on awkward pixels (NaN, −0, alpha outside [0, 1]), FP16 region writes, the parallel loop. |
+| `layer_stack` | F16C bulk conversion against the scalar code (all 65536 halves, ~1M float bit patterns), the single-layer pass-through against the full compositor on awkward pixels (NaN, −0, alpha outside [0, 1]), FP16 region writes, the parallel loop; the 16 blend modes, layer transforms, path flattening, vector coverage and strokes, adjustment layers (opacity, masks, groups), smart objects, dirty-tile mapping, mask preview, and brush / eraser / clone dabs with undo snapshots. |
+| `color_adjust` | The CPU references of the colour nodes: Oklab, white balance on the Planckian locus (illuminant A, D65 with its tint), the HSL mixer, colour grading, tone curves (spline, sanitizing, tables, HDR extension), parameter packing and the canonical develop order. |
+| `color_gpu` | White balance, HSL, colour grading, tone curves (including the table re-upload after an edit) and lens corrections on the GPU against those references, under synchronization validation. |
+| `lens_correction` | The lensfun XML reader (entities, translations, malformed files), lens and camera matching, interpolation across focal lengths and apertures, and the correction geometry: distortion direction and amount, TCA, vignetting, constrain crop, sanitizing. |
+| `mask_engine` | Mask components (brush rasterization and undo, linear and radial gradients, luminance and colour ranges, Subject / Sky placeholders), add / subtract / intersect, serialization, local adjustments and layer masks. |
+| `mask_gpu` | GPU mask generation and the local adjustment node against the CPU masks, with several masks over two texture layers, brush strokes and undo, and the overlay, under synchronization validation. |
 | `image_decoder` | Every supported format generated in memory, including hand-built 16-bit PNG, TIFF, RAW and RAF containers: exact linear values, all eight EXIF orientations, area-downscale weights, error messages, concurrent decodes. |
 | `photo_preview` | Opens photos through the whole app and reads back what the viewport shows: sRGB round trip within 1 LSB, a live +1 EV edit, enabling noise reduction (node order, measured noise, halved noise, saved stack), a resize with alpha, a missing file. Under core and synchronization validation. |
 | `denoise_reference` | The CPU denoiser: constants, noise estimation, exact reconstruction, PSNR gain, clean images left alone. |
 | `denoise_gpu` | GPU against CPU reference on several sizes (odd ones, one level, manual noise, bypass): same sigma, output within 1e-8 mean, +6 dB PSNR, no validation errors. |
 | `denoise_bench_smoke` | A tiny run of `darkhouse_denoise_bench`, so the benchmark keeps working. |
 | `present_smoke` | Opens a window, creates the presenting Vulkan 1.3 context and swapchain, and clears and presents 120 frames with dynamic rendering, resizing halfway. Runs with core **and synchronization** validation, and any validation error fails it. Exits 77 (skipped) without a display. |
+| `workspace_gui` | The real desktop shell in a window, scripted frame by frame: opening a photo from the Catalog lands in Develop; each workspace switch takes effect on the next frame with only that workspace's windows drawn; a 7-node develop stack (lens, white balance, tone, curves, HSL, grading, masked local adjustment) matches the CPU references (worst 3, mean 0.26 LSB); a 61-frame slider drag keeps the UI drawing while evaluations run (p95 frame interval ~23 ms on lavapipe) and saves the released value; a vector layer shows through the develop stack in Canvas; the red channel view is grey. Zero validation errors, synchronization validation included. |
 
 Tests that need a GPU exit 77 (skipped) without a Vulkan 1.3 device. The GUI
 tests run headless under Xvfb with Mesa's software Vulkan driver (lavapipe):
@@ -401,8 +418,12 @@ DISPLAY=:99 ctest --test-dir build --output-on-failure
 The shell has also been checked with Release GCC and Clang `-Werror` builds,
 an ASan/UBSan build, and scripted UI sessions under synchronization
 validation. Those sessions cover importing, culling, opening assets (which
-rebuilds the develop graph with frames in flight), live exposure edits,
-workspace switches and window resizes.
+rebuilds the develop graph with frames in flight), live develop and mask
+edits, painting, paths, transforms and undo in Canvas, workspace switches and
+window resizes. Under ASan, LeakSanitizer reports about 112 bytes allocated
+by lavapipe's worker threads once the Vulkan loader unloads the driver at
+exit; with the driver kept loaded (`LD_PRELOAD=.../libvulkan_lvp.so`) the
+report disappears, so it is the unload hiding the driver's own references.
 
 ## Status
 
