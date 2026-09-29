@@ -691,6 +691,9 @@ void LayerNode::setMaskEnabled(bool enabled) noexcept {
 
 void LayerNode::removeMask() noexcept {
     mask_.reset();
+    LayerNode* root = this;
+    while (root->parent_) root = root->parent_;
+    if (root->maskPreview_ == this) root->maskPreview_ = nullptr;
     markCompositeDirty();
 }
 
@@ -728,6 +731,12 @@ void LayerNode::markCompositeDirty() noexcept {
     LayerNode* root = this;
     while (root->parent_) root = root->parent_;
     root->compositeDirty_ = true;
+}
+
+void LayerNode::setMaskPreview(const LayerNode* layer) noexcept {
+    if (maskPreview_ == layer) return;
+    maskPreview_ = layer;
+    markCompositeDirty();
 }
 
 bool LayerNode::takeCompositeDirty() noexcept {
@@ -769,6 +778,11 @@ std::unique_ptr<LayerNode> LayerNode::removeChild(const LayerNode& child) {
     std::unique_ptr<LayerNode> removed = std::move(*it);
     children_.erase(it);
     removed->parent_ = nullptr;
+    LayerNode* root = this;
+    while (root->parent_) root = root->parent_;
+    if (root->maskPreview_ && (root->maskPreview_ == removed.get() || removed->isAncestorOf(*root->maskPreview_))) {
+        root->maskPreview_ = nullptr;  // the previewed mask leaves the document
+    }
     markCompositeDirty();
     return removed;
 }
@@ -1049,6 +1063,20 @@ CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_
     out.width = std::min(TILE_SIZE, canvasWidth - key.tx * TILE_SIZE);
     out.height = std::min(TILE_SIZE, canvasHeight - key.ty * TILE_SIZE);
     out.rgba.assign(std::size_t{out.width} * out.height * 4, 0.0f);
+    if (const LayerNode* preview = root.maskPreview(); preview && preview->mask()) {
+        // Mask channel view: the mask as an opaque grey image.
+        const SparseRasterLayer& mask = *preview->mask();
+        const PixelTile* tile = mask.getTile(key);
+        for (std::uint32_t y = 0; y < out.height; ++y) {
+            for (std::uint32_t x = 0; x < out.width; ++x) {
+                const float v = sampleMask(mask, tile, x, y);
+                float* p = &out.rgba[(std::size_t{y} * out.width + x) * 4];
+                p[0] = p[1] = p[2] = v;
+                p[3] = 1.0f;
+            }
+        }
+        return out;
+    }
     compositeInto(root, key, out.width, out.height, out.rgba);
     return out;
 }
@@ -1056,7 +1084,8 @@ CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_
 CompositedTileHalf compositeTileHalf(const LayerNode& root, TileKey key, std::uint32_t canvasWidth,
                                      std::uint32_t canvasHeight) {
     CompositedTileHalf out;
-    if (const SparseRasterLayer* raster = passThroughRaster(root, canvasWidth, canvasHeight)) {
+    const SparseRasterLayer* raster = root.maskPreview() ? nullptr : passThroughRaster(root, canvasWidth, canvasHeight);
+    if (raster) {
         if (key.tx >= raster->tilesX() || key.ty >= raster->tilesY()) {
             throw std::out_of_range("compositeTileHalf: tile outside the canvas");
         }

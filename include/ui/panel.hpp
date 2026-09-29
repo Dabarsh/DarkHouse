@@ -29,8 +29,11 @@ enum class PanelId : std::uint8_t {
     ENGINE,       // floating diagnostics
     MASKING,      // right:  local-adjustment masks and masking tools
     PROPERTIES,   // right:  the selected layer's properties (Canvas & Compositing)
+    TOOLS,        // left:   canvas tools and their options
+    CHANNELS,     // right:  channel views of the canvas and the layer mask
+    PATHS,        // right:  vector paths: pen, point editing, fill / stroke, path to mask
 };
-inline constexpr std::size_t kPanelCount = 11;
+inline constexpr std::size_t kPanelCount = 14;
 
 struct PanelInfo {
     PanelId id;

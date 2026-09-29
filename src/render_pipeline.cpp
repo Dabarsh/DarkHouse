@@ -231,7 +231,8 @@ std::vector<std::byte> ExposureNode::pack(const ExposureParams& params) {
 // -----------------------------------------------------------------------------
 
 DisplayTransformNode::DisplayTransformNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory)
-    : PointOperatorNode(context, shaderDirectory / "display_srgb.spv", 0, PixelFormat::R8G8B8A8_UNORM) {}
+    : PointOperatorNode(context, shaderDirectory / "display_srgb.spv", sizeof(std::array<std::uint32_t, 4>),
+                        PixelFormat::R8G8B8A8_UNORM) {}
 
 void DisplayTransformNode::updateUniforms(std::span<const std::byte> packedParams) {
     if (!packedParams.empty()) throw std::invalid_argument("DisplayTransformNode takes no parameters");

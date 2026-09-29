@@ -1,5 +1,6 @@
 #include "ui/shell.hpp"
 
+#include "ui/canvas_tools.hpp"
 #include "ui/panels.hpp"
 #include "ui/theme.hpp"
 
@@ -68,6 +69,9 @@ std::unique_ptr<Panel> makePanel(PanelId id) {
     case PanelId::ENGINE: return std::make_unique<EnginePanel>();
     case PanelId::MASKING: return std::make_unique<MaskingPanel>();
     case PanelId::PROPERTIES: return std::make_unique<PropertiesPanel>();
+    case PanelId::TOOLS: return std::make_unique<ToolsPanel>();
+    case PanelId::CHANNELS: return std::make_unique<ChannelsPanel>();
+    case PanelId::PATHS: return std::make_unique<PathsPanel>();
     }
     return nullptr;
 }
@@ -104,6 +108,7 @@ void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngin
     drawPanels(ctx);
     syncMaskOverlay(ctx);
     canvas_.pollSmartObjects(app.document(), app.canvasWidth(), app.canvasHeight());
+    canvas_.syncView(ctx);
     if (requests.openImportDialog) openImportDialog_ = true;
 
     drawImportDialog(ctx);
@@ -122,6 +127,7 @@ void DarkHouseShell::handleShortcuts(PanelContext& ctx) {
     }
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_I, kGlobal)) openImportDialog_ = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, kGlobal)) ctx.gui.requestClose();
+    canvasToolShortcuts(ctx);
 }
 
 // -----------------------------------------------------------------------------

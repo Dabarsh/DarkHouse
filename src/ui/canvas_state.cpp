@@ -1,5 +1,7 @@
 #include "ui/canvas_state.hpp"
 
+#include "app_controller.hpp"
+
 #include "adjustment_ops.hpp"
 #include "image_decoder.hpp"
 
@@ -114,6 +116,44 @@ void drawLayerOutline(const LayerNode& layer, ImDrawList* drawList, ImVec2 image
 
 void CanvasState::validate(const LayerNode& root) {
     if (selectedLayer && !containsLayer(root, selectedLayer)) selectedLayer = nullptr;
+    if (maskChannel && !containsLayer(root, maskChannel)) maskChannel = nullptr;
+}
+
+void CanvasState::syncView(PanelContext& ctx) {
+    LayerNode& root = ctx.app.document();
+    validate(root);
+    const bool canvas = ctx.frame.mode == AppMode::CANVAS;
+    if (maskChannel && !maskChannel->mask()) maskChannel = nullptr;
+    const DisplayChannel wanted = canvas && !maskChannel ? channel : DisplayChannel::COLOR;
+    if (wanted != sentChannel_) {
+        ctx.app.postEvent(SetDisplayChannelEvent{wanted});
+        sentChannel_ = wanted;
+    }
+    root.setMaskPreview(canvas ? maskChannel : nullptr);
+    if (!canvas) {
+        tools.dragging = false;
+        tools.penPoints.clear();
+    }
+}
+
+LayerNode& CanvasState::insertLayer(LayerNode& root, std::unique_ptr<LayerNode> layer) {
+    validate(root);
+    LayerNode* parent = &root;
+    std::size_t position = root.childCount();
+    if (selectedLayer && selectedLayer != &root) {
+        if (selectedLayer->isGroup()) {
+            parent = selectedLayer;
+            position = selectedLayer->childCount();
+        } else {
+            parent = selectedLayer->parent();
+            for (std::size_t i = 0; i < parent->childCount(); ++i) {
+                if (&parent->child(i) == selectedLayer) position = i + 1;
+            }
+        }
+    }
+    LayerNode& added = parent->insertChild(position, std::move(layer));
+    selectedLayer = &added;
+    return added;
 }
 
 void CanvasState::loadSmartObject(LayerNode& layer, const std::filesystem::path& file, std::vector<EditNodeRecord> editStack,

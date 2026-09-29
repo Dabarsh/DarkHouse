@@ -3,7 +3,7 @@
 //   Catalog      CollectionsPanel, SearchPanel, MetadataPanel, LibraryGridPanel, FilmstripPanel
 //   Canvas view  ViewportPanel (every workspace but Catalog)
 //   Develop      AdjustmentsPanel, MaskingPanel
-//   Compositing  LayersPanel, PropertiesPanel
+//   Compositing  LayersPanel, PropertiesPanel, ToolsPanel, ChannelsPanel, PathsPanel
 //
 // Catalog panels share one LibraryModel (collection, filter, selection) via
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
@@ -143,6 +143,28 @@ public:
 
 private:
     int maskCounter_ = 0;
+};
+
+// Canvas tools (ui/canvas_tools.hpp) and the active tool's options.
+class ToolsPanel final : public Panel {
+public:
+    ToolsPanel() noexcept : Panel(PanelId::TOOLS) {}
+    void draw(PanelContext& ctx) override;
+};
+
+// Channel views: RGB, red, green, blue, alpha, and the selected layer's mask.
+class ChannelsPanel final : public Panel {
+public:
+    ChannelsPanel() noexcept : Panel(PanelId::CHANNELS) {}
+    void draw(PanelContext& ctx) override;
+};
+
+// The document's vector paths (vector layers): select, draw, edit points,
+// fill / stroke, delete, and make the layer below's mask from a path.
+class PathsPanel final : public Panel {
+public:
+    PathsPanel() noexcept : Panel(PanelId::PATHS) {}
+    void draw(PanelContext& ctx) override;
 };
 
 }  // namespace darkhouse::ui

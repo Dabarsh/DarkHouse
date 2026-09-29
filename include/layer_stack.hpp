@@ -341,6 +341,13 @@ public:
     void markCompositeDirty() noexcept;
     [[nodiscard]] bool takeCompositeDirty() noexcept;  // on the root: returns and clears the flag
 
+    // On the root: show `layer`'s mask as the whole canvas (a grey image,
+    // white = revealed) instead of the composite, as a mask channel view;
+    // nullptr for the normal composite. Cleared when that layer or its mask
+    // is removed.
+    void setMaskPreview(const LayerNode* layer) noexcept;
+    [[nodiscard]] const LayerNode* maskPreview() const noexcept { return maskPreview_; }
+
     // Content. Each accessor returns nullptr when the node is of another type.
     [[nodiscard]] SparseRasterLayer* raster() noexcept { return std::get_if<SparseRasterLayer>(&content_); }
     [[nodiscard]] const SparseRasterLayer* raster() const noexcept { return std::get_if<SparseRasterLayer>(&content_); }
@@ -401,6 +408,7 @@ private:
     bool visible_ = true;
     LayerTransform transform_;
     bool compositeDirty_ = false;
+    const LayerNode* maskPreview_ = nullptr;  // root only
     std::unique_ptr<SparseRasterLayer> mask_;
     bool maskEnabled_ = true;
     LayerNode* parent_ = nullptr;

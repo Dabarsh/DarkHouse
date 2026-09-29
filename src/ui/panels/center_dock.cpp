@@ -1,6 +1,7 @@
 // Center dock: library grid, viewport (develop output), filmstrip.
 
 #include "ui/canvas_state.hpp"
+#include "ui/canvas_tools.hpp"
 #include "ui/masking.hpp"
 #include "ui/panels.hpp"
 #include "ui/theme.hpp"
@@ -233,7 +234,10 @@ void ViewportPanel::draw(PanelContext& ctx) {
     // An active masking tool (brush, gradient, eyedropper) takes the left
     // button; the view then pans with the middle button only.
     const CanvasView toolView{viewCenter + pan_ - imageSize * scale * 0.5f, scale, imageSize};
-    const bool toolUsed = maskingViewportInput(ctx, toolView, hovered, ImGui::IsItemActive());
+    bool toolUsed = maskingViewportInput(ctx, toolView, hovered, ImGui::IsItemActive());
+    if (compositing && ctx.masking.tool == MaskTool::NONE) {
+        toolUsed = canvasViewportInput(ctx, toolView, hovered, ImGui::IsItemActive()) || toolUsed;
+    }
     if (ImGui::IsItemActive() && ((!toolUsed && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) ||
                                   ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))) {
         pan_ += glm::vec2(io.MouseDelta);
@@ -282,6 +286,7 @@ void ViewportPanel::draw(PanelContext& ctx) {
     if (compositing) {
         ctx.canvas.validate(ctx.app.document());
         if (const LayerNode* layer = ctx.canvas.selectedLayer) drawLayerOutline(*layer, drawList, imageMin, scale);
+        if (ctx.masking.tool == MaskTool::NONE) drawCanvasToolOverlay(ctx, CanvasView{imageMin, scale, imageSize}, hovered);
     }
     drawList->PopClipRect();
     drawPhotoStatus(ctx, origin, region);

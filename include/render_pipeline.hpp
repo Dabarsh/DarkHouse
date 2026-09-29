@@ -8,6 +8,7 @@
 
 #include "vulkan_context.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -125,6 +126,10 @@ private:
     ExposureParams params_;
 };
 
+// What the display transform shows: the colour image, or one channel of it
+// as grey (the Canvas workspace's Channels panel).
+enum class DisplayChannel : std::uint32_t { COLOR, RED, GREEN, BLUE, ALPHA };
+
 // The view transform at the end of the develop graph: scene-linear rgba16f to
 // sRGB-encoded RGBA8 for the UNORM swapchain the UI draws into (values are
 // clipped to [0, 1], with a triangular dither of +-1 LSB against banding).
@@ -138,6 +143,14 @@ public:
 
     [[nodiscard]] std::string_view typeName() const noexcept override { return kTypeName; }
     void updateUniforms(std::span<const std::byte> packedParams) override;  // takes no parameters
+
+    void setChannel(DisplayChannel channel) noexcept { push_[0] = static_cast<std::uint32_t>(channel); }
+    [[nodiscard]] DisplayChannel channel() const noexcept { return static_cast<DisplayChannel>(push_[0]); }
+
+private:
+    [[nodiscard]] const void* pushConstants() const noexcept override { return push_.data(); }
+
+    std::array<std::uint32_t, 4> push_{};
 };
 
 // Maps an edit_nodes.node_type string to a node. Throws std::invalid_argument

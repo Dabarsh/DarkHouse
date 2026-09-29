@@ -8,6 +8,8 @@
 #include "asset_manager.hpp"
 #include "layer_stack.hpp"
 #include "mask_engine.hpp"
+#include "render_pipeline.hpp"
+#include "ui/canvas_tools.hpp"
 
 #include <imgui.h>
 
@@ -54,6 +56,20 @@ void drawLayerOutline(const LayerNode& layer, ImDrawList* drawList, ImVec2 image
 
 struct CanvasState {
     LayerNode* selectedLayer = nullptr;
+    CanvasToolState tools;
+
+    // Channels panel: the channel shown in the viewport, and the layer whose
+    // mask is shown instead of the composite (nullptr for none).
+    DisplayChannel channel = DisplayChannel::COLOR;
+    const LayerNode* maskChannel = nullptr;
+    // Once per frame after the panels: sends the channel view to the engine
+    // (reset to the colour image outside the Canvas workspace) and keeps the
+    // document's mask preview in step.
+    void syncView(PanelContext& ctx);
+
+    // Inserts `layer` above the selection (inside a selected group, on top)
+    // and selects it.
+    LayerNode& insertLayer(LayerNode& root, std::unique_ptr<LayerNode> layer);
 
     // Drops the selection when the layer is no longer in `root` (deleted, or
     // the document was replaced by a newly opened photo).
@@ -76,6 +92,7 @@ private:
         std::future<std::shared_ptr<const SparseRasterLayer>> pixels;
     };
     std::vector<PendingSmartObject> pendingSmartObjects_;
+    DisplayChannel sentChannel_ = DisplayChannel::COLOR;
 };
 
 }  // namespace darkhouse::ui

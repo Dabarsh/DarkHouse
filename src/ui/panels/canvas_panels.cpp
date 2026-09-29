@@ -214,23 +214,7 @@ bool editAdjustment(AdjustmentContent& content) {
 std::string LayersPanel::nextName(const char* base) { return std::string(base) + " " + std::to_string(nameCounter_++); }
 
 void LayersPanel::addLayer(PanelContext& ctx, std::unique_ptr<LayerNode> layer) {
-    LayerNode& root = ctx.app.document();
-    LayerNode*& selected = ctx.canvas.selectedLayer;
-    // Above the selection, in the same group; inside a selected group, on top.
-    LayerNode* parent = &root;
-    std::size_t position = root.childCount();
-    if (selected && selected != &root) {
-        if (selected->isGroup()) {
-            parent = selected;
-            position = selected->childCount();
-        } else {
-            parent = selected->parent();
-            position = indexInParent(*selected) + 1;
-        }
-    }
-    LayerNode& added = parent->insertChild(position, std::move(layer));
-    selected = &added;
-    invalidateComposite(root);
+    ctx.canvas.insertLayer(ctx.app.document(), std::move(layer));
 }
 
 void LayersPanel::draw(PanelContext& ctx) {

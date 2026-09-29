@@ -7,8 +7,8 @@
 //   CATALOG       asset grid: browser / search / metadata | library grid
 //   DEVELOP       parametric development (the Lightroom-style module):
 //                 browser / metadata | viewport over filmstrip | adjustments + masking
-//   CANVAS        compositing (the Photoshop-style module):
-//                 viewport | properties + masking over the layer stack
+//   CANVAS        compositing (the Photoshop-style module): tools | viewport |
+//                 properties + masking over layers + channels + paths
 //   HYBRID_SPLIT  library and develop side by side:
 //                 browser / metadata | grid + viewport over filmstrip | adjustments + masking
 //
@@ -44,7 +44,7 @@ class WorkspaceLayoutManager {
 public:
     // Bump when a default layout changes, so saved layouts from older builds
     // are replaced instead of mixing old node trees with new panels.
-    static constexpr int kLayoutVersion = 6;
+    static constexpr int kLayoutVersion = 7;
 
     WorkspaceLayoutManager();
 

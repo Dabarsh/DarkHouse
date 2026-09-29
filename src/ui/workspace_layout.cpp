@@ -76,7 +76,8 @@ void WorkspaceLayoutManager::applyDefaultPanelSet(Workspace& workspace) {
               PanelId::ADJUSTMENTS, PanelId::MASKING});
         break;
     case AppMode::CANVAS:
-        show({PanelId::VIEWPORT, PanelId::LAYERS, PanelId::PROPERTIES, PanelId::MASKING});
+        show({PanelId::TOOLS, PanelId::VIEWPORT, PanelId::LAYERS, PanelId::CHANNELS, PanelId::PATHS, PanelId::PROPERTIES,
+              PanelId::MASKING});
         break;
     case AppMode::HYBRID_SPLIT:
         show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT,
@@ -194,15 +195,18 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         break;
     }
     case AppMode::CANVAS: {
-        // |                                | Properties  |
-        // |  Viewport                      |  (Masking)  |
-        // |                                |-------------|
-        // |                                | Layers      |
+        // | Tools |                          | Properties (Masking)       |
+        // |       |  Viewport                |----------------------------|
+        // |       |                          | Layers (Channels, Paths)   |
         ImGuiID right = splitWidth(center, ImGuiDir_Right, 360.0f, 0.18f, 0.30f);
         const ImGuiID layers = split(right, ImGuiDir_Down, 0.55f);
+        const ImGuiID tools = splitWidth(center, ImGuiDir_Left, 210.0f, 0.10f, 0.18f);
+        dock(PanelId::TOOLS, tools);
         dock(PanelId::PROPERTIES, right);
         dock(PanelId::MASKING, right);
         dock(PanelId::LAYERS, layers);
+        dock(PanelId::CHANNELS, layers);
+        dock(PanelId::PATHS, layers);
         dock(PanelId::VIEWPORT, center);
         break;
     }
@@ -239,7 +243,7 @@ void WorkspaceLayoutManager::bringFrontTabs(Workspace& workspace) {
     case AppMode::CATALOG: workspace.frontTabs = {PanelId::COLLECTIONS}; break;
     case AppMode::DEVELOP:
     case AppMode::HYBRID_SPLIT: workspace.frontTabs = {PanelId::COLLECTIONS, PanelId::ADJUSTMENTS}; break;
-    case AppMode::CANVAS: workspace.frontTabs = {PanelId::PROPERTIES}; break;
+    case AppMode::CANVAS: workspace.frontTabs = {PanelId::PROPERTIES, PanelId::LAYERS}; break;
     }
     workspace.frontTabDelay = 2;  // windows dock on their first frame; focus them after that
 }

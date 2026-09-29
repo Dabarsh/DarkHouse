@@ -255,7 +255,8 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
         developGraph_->addNode(std::make_unique<DisplayTransformNode>(*gpu_, config_.shaderDirectory));
     developGraph_->connectNodes(*previous, display, 0);
     graphDirty_ = true;
-    applyMaskOverlay();  // a viewing aid survives the rebuild
+    applyMaskOverlay();  // viewing aids survive the rebuild
+    applyDisplayChannel();
 }
 
 // -----------------------------------------------------------------------------
@@ -448,6 +449,23 @@ void DarkHouseApp::applyMaskOverlay() {
             node->setOverlay(maskOverlay_);
             graphDirty_ = true;
         }
+    }
+}
+
+void DarkHouseApp::handle(const SetDisplayChannelEvent& event) {
+    if (event.channel == displayChannel_) return;
+    displayChannel_ = event.channel;
+    applyDisplayChannel();
+}
+
+void DarkHouseApp::applyDisplayChannel() {
+    if (!developGraph_ || developGraph_->empty()) return;
+    // The display transform is the last node of the chain.
+    auto* display = dynamic_cast<DisplayTransformNode*>(
+        &developGraph_->node(static_cast<RenderPipelineGraph::NodeId>(developGraph_->nodeCount() - 1)));
+    if (display && display->channel() != displayChannel_) {
+        display->setChannel(displayChannel_);
+        graphDirty_ = true;
     }
 }
 

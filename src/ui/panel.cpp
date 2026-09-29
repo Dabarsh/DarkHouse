@@ -14,13 +14,17 @@ constexpr std::array<PanelInfo, kPanelCount> kPanels{{
     {PanelId::ADJUSTMENTS, "Adjustments", "Adjustments", "Develop: white balance, tone, colour mixer, colour grading and detail of the photo"},
     {PanelId::ENGINE, "Engine", "Engine", "GPU, swapchain and frame timing diagnostics"},
     {PanelId::MASKING, "Masking", "Masking", "Masks for local adjustments: brush, gradients, colour and luminance ranges"},
-    {PanelId::PROPERTIES, "Properties", "Properties", "The selected layer: name, layer mask and content"},
+    {PanelId::PROPERTIES, "Properties", "Properties", "The selected layer: name, layer mask, content and transform"},
+    {PanelId::TOOLS, "Tools", "Tools", "Move, brush, eraser, clone stamp, pen, direct selection and eyedropper, with options"},
+    {PanelId::CHANNELS, "Channels", "Channels", "Show the red, green, blue or alpha channel, or the selected layer's mask"},
+    {PanelId::PATHS, "Paths", "Paths", "Vector paths: draw with the pen, edit points, fill and stroke, turn into a mask"},
 }};
 
 // Menu order: catalog panels, the canvas, develop panels, compositing panels.
 constexpr std::array<PanelId, kPanelCount> kAllPanels{
-    PanelId::COLLECTIONS, PanelId::SEARCH,  PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT,   PanelId::FILMSTRIP,
-    PanelId::ADJUSTMENTS, PanelId::MASKING, PanelId::LAYERS,   PanelId::PROPERTIES, PanelId::ENGINE,
+    PanelId::COLLECTIONS, PanelId::SEARCH,  PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT, PanelId::FILMSTRIP,
+    PanelId::ADJUSTMENTS, PanelId::MASKING, PanelId::TOOLS,    PanelId::LAYERS,     PanelId::PROPERTIES,
+    PanelId::CHANNELS,    PanelId::PATHS,   PanelId::ENGINE,
 };
 
 const char* presentModeName(VkPresentModeKHR mode) {

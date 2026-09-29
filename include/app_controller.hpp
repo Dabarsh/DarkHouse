@@ -117,9 +117,14 @@ struct SetDevelopStackEvent {
 struct SetMaskOverlayEvent {
     int maskIndex = -1;
 };
+// Shows one channel of the canvas as grey (Canvas > Channels); COLOR is
+// the normal view. A viewing aid; not saved.
+struct SetDisplayChannelEvent {
+    DisplayChannel channel = DisplayChannel::COLOR;
+};
 using AppEvent = std::variant<QuitEvent, SwitchModeEvent, ImportFilesEvent, SetRatingEvent, SetFlagEvent,
                               SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent, SetDevelopStackEvent,
-                              SetMaskOverlayEvent>;
+                              SetMaskOverlayEvent, SetDisplayChannelEvent>;
 
 struct FrameContext {
     std::uint64_t frameIndex = 0;
@@ -273,7 +278,9 @@ private:
     void handle(const SetDevelopParamsEvent& event);
     void handle(const SetDevelopStackEvent& event);
     void handle(const SetMaskOverlayEvent& event);
+    void handle(const SetDisplayChannelEvent& event);
     void applyMaskOverlay();
+    void applyDisplayChannel();
     void pollImports();
     void startPhotoLoad(const AssetRecord& asset);
     void pollPhotoLoad();
@@ -299,6 +306,7 @@ private:
     std::vector<RenderPipelineGraph::NodeTiming> developTimings_;
     VulkanContext::Submission developSubmission_;  // the develop evaluation in flight, if any
     int maskOverlay_ = -1;                          // mask shown as an overlay (SetMaskOverlayEvent)
+    DisplayChannel displayChannel_ = DisplayChannel::COLOR;  // SetDisplayChannelEvent
     bool graphDirty_ = true;
     std::uint64_t canvasGeneration_ = 0;
     bool frontEndAttached_ = false;

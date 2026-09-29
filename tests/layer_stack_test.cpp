@@ -1,11 +1,13 @@
 // Layer stack tests: bulk FP16 conversion (F16C or scalar) against the scalar
 // reference, the pass-through composite against the full compositor, binary16
 // region writes, the parallel loop, blend modes, layer transforms, vector
-// shapes, adjustment layers, smart objects and dirty-tile tracking.
+// shapes, adjustment layers, smart objects, dirty-tile tracking, and brush,
+// eraser, clone and undo on raster layers.
 
 #include "color_adjust.hpp"
 #include "layer_stack.hpp"
 #include "parallel.hpp"
+#include "raster_paint.hpp"
 #include "render_pipeline.hpp"
 
 #include <algorithm>
@@ -482,6 +484,73 @@ void testDirtyTracking() {
     // Content edits through accessors are flagged explicitly.
     root->child(0).markCompositeDirty();
     CHECK(takeDirtyTiles(*root, w, h).size() == 6);
+
+    // Mask preview: the mask as grey, everywhere; cleared with the layer.
+    LayerNode& masked = root->addChild(LayerNode::createRaster("Masked", w, h));
+    masked.addMask(w, h).writePixel(3, 3, std::vector<float>{0.25f});
+    root->setMaskPreview(&masked);
+    CHECK(takeDirtyTiles(*root, w, h).size() == 6);
+    const std::array<float, 4> preview = pixelAt(*root, w, h, 3, 3);
+    CHECK(near(preview[0], 0.25f, 1e-3f) && preview[3] == 1.0f);
+    CHECK(pixelAt(*root, w, h, 100, 100)[0] == 1.0f);  // unpainted mask: reveal all
+    root->removeChild(masked);
+    CHECK(root->maskPreview() == nullptr);
+}
+
+void testPainting() {
+    // Coverage: full in the hard core, none past the radius, smooth between.
+    const BrushTip tip{10.0f, 0.5f, 1.0f};
+    CHECK(dabCoverage(tip, 0.0f) == 1.0f && dabCoverage(tip, 5.0f) == 1.0f);
+    CHECK(dabCoverage(tip, 10.0f) == 0.0f && dabCoverage(tip, 12.0f) == 0.0f);
+    CHECK(dabCoverage(tip, 7.5f) > 0.0f && dabCoverage(tip, 7.5f) < 1.0f);
+    CHECK(dabCoverage(BrushTip{10.0f, 1.0f, 1.0f}, 9.5f) > 0.0f);  // a hard brush still anti-aliases its last pixel
+
+    // Paint: opaque red in the middle of a transparent layer, nothing far away.
+    SparseRasterLayer layer(64, 64);
+    const std::vector<TileKey> tiles = dabTiles(layer, 32.0f, 32.0f, 10.0f);
+    CHECK(tiles.size() == 1);
+    TileSnapshot snapshot(layer);
+    snapshot.capture(tiles);
+    paintDab(layer, 32.0f, 32.0f, tip, {1.0f, 0.0f, 0.0f, 1.0f}, DabMode::PAINT);
+    std::vector<float> px(4);
+    layer.readPixel(32, 32, px);
+    CHECK(near(px[0], 1.0f, 1e-3f) && near(px[3], 1.0f, 1e-3f));
+    layer.readPixel(32, 45, px);
+    CHECK(px[3] == 0.0f);
+    // Half flow blue over it: half-way colour, alpha stays 1.
+    paintDab(layer, 32.0f, 32.0f, BrushTip{10.0f, 0.5f, 0.5f}, {0.0f, 0.0f, 1.0f, 1.0f}, DabMode::PAINT);
+    layer.readPixel(32, 32, px);
+    CHECK(near(px[0], 0.5f, 2e-3f) && near(px[2], 0.5f, 2e-3f) && near(px[3], 1.0f, 1e-3f));
+    // Erase fades alpha.
+    paintDab(layer, 32.0f, 32.0f, BrushTip{10.0f, 0.5f, 0.5f}, {}, DabMode::ERASE);
+    layer.readPixel(32, 32, px);
+    CHECK(near(px[3], 0.5f, 2e-3f));
+    // Undo puts the tile back as it was: unallocated.
+    snapshot.restore();
+    CHECK(layer.tileCount() == 0);
+    layer.readPixel(32, 32, px);
+    CHECK(px[3] == 0.0f);
+
+    // Masks: black hides, the eraser reveals again.
+    SparseRasterLayer mask(64, 64, 1, 1.0f);
+    std::vector<float> m(1);
+    paintDab(mask, 20.0f, 20.0f, tip, {0.0f, 0.0f, 0.0f, 1.0f}, DabMode::PAINT);
+    mask.readPixel(20, 20, m);
+    CHECK(near(m[0], 0.0f, 1e-3f));
+    mask.readPixel(50, 50, m);
+    CHECK(m[0] == 1.0f);
+    paintDab(mask, 20.0f, 20.0f, tip, {}, DabMode::ERASE);
+    mask.readPixel(20, 20, m);
+    CHECK(near(m[0], 1.0f, 1e-3f));
+
+    // Clone: copies a patch 20 pixels to the right, reading before writing.
+    SparseRasterLayer canvas(64, 32);
+    canvas.writePixel(40, 16, std::vector<float>{0.2f, 0.7f, 0.1f, 1.0f});
+    cloneDab(canvas, canvas, 20.0f, 16.5f, 20.0f, 0.0f, BrushTip{4.0f, 1.0f, 1.0f});
+    canvas.readPixel(20, 16, px);
+    CHECK(near(px[1], 0.7f, 2e-3f) && near(px[3], 1.0f, 1e-3f));
+    canvas.readPixel(40, 16, px);
+    CHECK(near(px[1], 0.7f, 2e-3f));  // the source is untouched
 }
 
 }  // namespace
@@ -498,6 +567,7 @@ int main() {
     testAdjustmentLayers();
     testSmartObjects();
     testDirtyTracking();
+    testPainting();
     if (g_failures) {
         std::cout << g_failures << " check(s) failed\n";
         return 1;
