@@ -58,7 +58,7 @@ WorkspaceLayoutManager::WorkspaceLayoutManager() {
             workspace.windowNames[index(panel)] = std::string(info.title) + "###" + prefix + "." + info.key;
         }
         applyDefaultPanelSet(workspace);
-        bringFrontTabs(workspace);
+        defaultFrontTabs(workspace);
     }
 }
 
@@ -106,6 +106,10 @@ void WorkspaceLayoutManager::submit(AppMode active) {
     // tabs. Until then it has no dock node and gets no keep-alive DockSpace()
     // below, which would create an empty node that hides the missing layout.
     Workspace& current = workspaces_[index(active)];
+    if (lastActive_ != active) {
+        current.restoreFrames = 3;  // shown (again): put its tabs back
+        lastActive_ = active;
+    }
     if (current.resetPending || ImGui::DockBuilderGetNode(current.dockspace) == nullptr) {
         if (current.resetPending) applyDefaultPanelSet(current);
         buildDefaultLayout(current, viewport->WorkSize);
@@ -231,34 +235,37 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
     }
     }
     ImGui::DockBuilderFinish(root);
-    bringFrontTabs(workspace);
+    defaultFrontTabs(workspace);
 }
 
-void WorkspaceLayoutManager::bringFrontTabs(Workspace& workspace) {
-    // Tabbed docks open on these panels. Left alone, a dock node shows
-    // whichever of its windows began last, even over a selection saved in
-    // the .ini, so the main panel of each group is brought to the front once
-    // per session (and after a reset); later tab choices are kept.
+void WorkspaceLayoutManager::defaultFrontTabs(Workspace& workspace) {
+    workspace.front.fill(false);
+    auto front = [&](std::initializer_list<PanelId> panels) {
+        for (PanelId panel : panels) workspace.front[index(panel)] = true;
+    };
     switch (workspace.mode) {
-    case AppMode::CATALOG: workspace.frontTabs = {PanelId::COLLECTIONS}; break;
+    case AppMode::CATALOG: front({PanelId::COLLECTIONS}); break;
     case AppMode::DEVELOP:
-    case AppMode::HYBRID_SPLIT: workspace.frontTabs = {PanelId::COLLECTIONS, PanelId::ADJUSTMENTS}; break;
-    case AppMode::CANVAS: workspace.frontTabs = {PanelId::PROPERTIES, PanelId::LAYERS}; break;
+    case AppMode::HYBRID_SPLIT: front({PanelId::COLLECTIONS, PanelId::ADJUSTMENTS}); break;
+    case AppMode::CANVAS: front({PanelId::PROPERTIES, PanelId::LAYERS}); break;
     }
-    workspace.frontTabDelay = 2;  // windows dock on their first frame; focus them after that
+    workspace.restoreFrames = 3;
 }
 
-std::optional<PanelId> WorkspaceLayoutManager::takeFrontTab(AppMode mode) noexcept {
-    Workspace& workspace = workspaces_[index(mode)];
-    if (workspace.frontTabs.empty()) return std::nullopt;
-    if (workspace.frontTabDelay > 0) {
-        --workspace.frontTabDelay;
-        return std::nullopt;
+void WorkspaceLayoutManager::updateTabs(AppMode active) {
+    Workspace& workspace = workspaces_[index(active)];
+    for (PanelId panel : allPanels()) {
+        if (!workspace.open[index(panel)]) continue;
+        ImGuiWindow* window = ImGui::FindWindowByName(workspace.windowNames[index(panel)].c_str());
+        ImGuiTabBar* tabBar = window && window->DockNode ? window->DockNode->TabBar : nullptr;
+        if (!tabBar) continue;
+        if (workspace.restoreFrames > 0) {
+            if (workspace.front[index(panel)] && tabBar->SelectedTabId != window->TabId) tabBar->NextSelectedTabId = window->TabId;
+        } else {
+            workspace.front[index(panel)] = tabBar->SelectedTabId == window->TabId;
+        }
     }
-    const PanelId panel = workspace.frontTabs.front();
-    workspace.frontTabs.erase(workspace.frontTabs.begin());
-    workspace.frontTabDelay = 1;  // one focus change per frame: the tab bar follows the focused window
-    return panel;
+    if (workspace.restoreFrames > 0) --workspace.restoreFrames;
 }
 
 }  // namespace darkhouse::ui

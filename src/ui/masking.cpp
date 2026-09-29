@@ -293,8 +293,13 @@ void syncMaskOverlay(PanelContext& ctx) {
         // The panel is closed or behind another tab: its tools and overlay go with it.
         m.tool = MaskTool::NONE;
         m.stroking = false;
+        m.visibleFrames = 0;
+    } else if (m.visibleFrames < 2) {
+        ++m.visibleFrames;
     }
-    const int wanted = m.panelVisible && m.showOverlay && m.mask() ? m.selectedMask : -1;
+    // Two frames in a row, so a tab that shows for a single frame while a dock
+    // is rebuilt does not flash the overlay (and re-render the photo twice).
+    const int wanted = m.visibleFrames >= 2 && m.showOverlay && m.mask() ? m.selectedMask : -1;
     if (wanted != m.overlaySent) {
         ctx.app.postEvent(SetMaskOverlayEvent{wanted});
         m.overlaySent = wanted;

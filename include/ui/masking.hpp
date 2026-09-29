@@ -55,6 +55,7 @@ struct MaskingState {
     MaskTool tool = MaskTool::NONE;
     bool showOverlay = true;  // red overlay of the selected mask while the Masking panel is visible
     bool panelVisible = false;  // set by the Masking panel each frame it draws; the shell resets it
+    int visibleFrames = 0;      // consecutive frames the panel has been visible (capped at 2)
 
     // Brush options.
     float brushSize = 60.0f;  // radius in canvas pixels

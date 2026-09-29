@@ -287,13 +287,16 @@ void DarkHouseShell::drawPanels(PanelContext& ctx) {
             ImGui::SetNextWindowClass(&windowClass);
         }
         if (panel.fullBleed()) ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        const bool visible = ImGui::Begin(layout_.windowName(mode, id), open, panel.windowFlags());
+        // Panels reappear on every workspace switch; taking focus then would
+        // pull each dock's last-drawn tab to the front (ImGui selects the
+        // focused window's tab).
+        const bool visible =
+            ImGui::Begin(layout_.windowName(mode, id), open, panel.windowFlags() | ImGuiWindowFlags_NoFocusOnAppearing);
         if (panel.fullBleed()) ImGui::PopStyleVar();
         if (visible) panel.draw(ctx);
         ImGui::End();
     }
-    // Focusing a docked window selects its tab.
-    if (const std::optional<PanelId> front = layout_.takeFrontTab(mode)) ImGui::SetWindowFocus(layout_.windowName(mode, *front));
+    layout_.updateTabs(mode);
 }
 
 // -----------------------------------------------------------------------------

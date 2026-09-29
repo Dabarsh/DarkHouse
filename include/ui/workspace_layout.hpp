@@ -60,10 +60,12 @@ public:
     [[nodiscard]] bool* panelOpen(AppMode mode, PanelId panel) noexcept;
     [[nodiscard]] ImGuiID dockspaceId(AppMode mode) const noexcept;
 
-    // When a workspace is first shown in a session (or reset), the panels to
-    // bring to the front of their tab groups, one per frame (the shell
-    // focuses them); nullopt when there is nothing to do this frame.
-    [[nodiscard]] std::optional<PanelId> takeFrontTab(AppMode mode) noexcept;
+    // After the panels are drawn: remembers which panel each tabbed dock of
+    // the active workspace shows, or, for a few frames after the workspace is
+    // shown (again), selects the remembered ones. ImGui rebuilds a hidden
+    // dock's tab bar when it reappears and would pick a tab of its own. A new
+    // or reset layout starts from each workspace's main panels.
+    void updateTabs(AppMode active);
 
 private:
     struct Workspace {
@@ -72,15 +74,16 @@ private:
         std::array<std::string, kPanelCount> windowNames;
         std::array<bool, kPanelCount> open{};
         bool resetPending = false;
-        std::vector<PanelId> frontTabs;  // see takeFrontTab
-        int frontTabDelay = 0;
+        std::array<bool, kPanelCount> front{};  // the selected tab of its dock (see updateTabs)
+        int restoreFrames = 0;
     };
 
     void buildDefaultLayout(Workspace& workspace, ImVec2 size);
     static void applyDefaultPanelSet(Workspace& workspace);
-    static void bringFrontTabs(Workspace& workspace);
+    static void defaultFrontTabs(Workspace& workspace);
 
     std::array<Workspace, kWorkspaceCount> workspaces_;
+    std::optional<AppMode> lastActive_;
 };
 
 }  // namespace darkhouse::ui
