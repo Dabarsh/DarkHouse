@@ -4,9 +4,9 @@
 // instance of every panel, so rearranging panels in one workspace never
 // disturbs another and every arrangement persists in the layout .ini:
 //
-//   CATALOG       asset grid focus: browser / search / metadata | library grid
-//   CANVAS        layer stack focus: browser / metadata | viewport over filmstrip | layers / adjustments
-//   HYBRID_SPLIT  dual view: browser / metadata | grid + viewport over filmstrip | layers / adjustments
+//   CATALOG       asset grid focus: collections / metadata | library grid
+//   CANVAS        layer stack focus: collections / metadata | viewport over filmstrip | layers / adjustments
+//   HYBRID_SPLIT  dual view: collections / metadata | grid + viewport over filmstrip | layers / adjustments
 //
 // Only the active workspace's dockspace is shown. The others are submitted
 // with ImGuiDockNodeFlags_KeepAliveOnly, so their docked windows stay docked
@@ -33,7 +33,7 @@ class WorkspaceLayoutManager {
 public:
     // Bump when a default layout changes, so saved layouts from older builds
     // are replaced instead of mixing old node trees with new panels.
-    static constexpr int kLayoutVersion = 4;
+    static constexpr int kLayoutVersion = 5;
 
     WorkspaceLayoutManager();
 
@@ -47,6 +47,9 @@ public:
     // "Metadata###DarkHouse.Catalog.Metadata": same label everywhere, unique ID per workspace.
     [[nodiscard]] const char* windowName(AppMode mode, PanelId panel) const noexcept;
     [[nodiscard]] bool* panelOpen(AppMode mode, PanelId panel) noexcept;
+    // Whether the panel is docked in the workspace's default layout. The
+    // others (Filters, Engine) open as floating windows.
+    [[nodiscard]] static bool inDefaultLayout(AppMode mode, PanelId panel) noexcept;
     [[nodiscard]] ImGuiID dockspaceId(AppMode mode) const noexcept;
 
 private:

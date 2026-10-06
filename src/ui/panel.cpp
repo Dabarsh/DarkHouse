@@ -5,7 +5,7 @@ namespace {
 
 constexpr std::array<PanelInfo, kPanelCount> kPanels{{
     {PanelId::COLLECTIONS, "Collections", "Collections", "Browse folders, collections and smart collections"},
-    {PanelId::SEARCH, "Search", "Search", "Search and filter the library by rating, flags, camera and exposure"},
+    {PanelId::SEARCH, "Filters", "Search", "Every search and filter control: text, rating, flag, label, camera, ISO, sort"},
     {PanelId::METADATA, "Metadata", "Metadata", "Capture and file metadata of the selected asset"},
     {PanelId::ASSET_GRID, "Library", "Library", "Thumbnail grid of the current collection"},
     {PanelId::VIEWPORT, "Viewport", "Viewport", "The developed canvas"},

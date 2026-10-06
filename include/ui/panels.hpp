@@ -1,8 +1,10 @@
 // DarkHouse — the dockable panels.
 //
-//   Left dock    CollectionsPanel, SearchPanel, MetadataPanel
-//   Center dock  LibraryGridPanel, ViewportPanel, FilmstripPanel
+//   Left dock    CollectionsPanel, MetadataPanel
+//   Center dock  LibraryGridPanel, ViewportPanel, FilmstripPanel (grid and
+//                filmstrip carry the filter bar)
 //   Right dock   LayersPanel, AdjustmentsPanel
+//   Floating     SearchPanel (every filter in one place), EnginePanel
 //
 // Catalog panels share one LibraryModel (collection, filter, selection) via
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
@@ -30,7 +32,8 @@ private:
     void drawFolder(PanelContext& ctx, const FolderNode& folder, int depth);
 };
 
-// Search and filter UI over the selected collection.
+// Every search and filter control over the selected collection. The filter bar
+// of the grid and filmstrip covers the common ones and opens this panel.
 class SearchPanel final : public Panel {
 public:
     SearchPanel() noexcept : Panel(PanelId::SEARCH) {}
@@ -54,6 +57,7 @@ public:
     void draw(PanelContext& ctx) override;
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
     [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
+    [[nodiscard]] bool canvasBackground() const noexcept override { return true; }
 };
 
 // The developed canvas (the develop graph's output texture), with zoom and pan.
@@ -63,6 +67,7 @@ public:
     void draw(PanelContext& ctx) override;
     [[nodiscard]] bool fullBleed() const noexcept override { return true; }
     [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
+    [[nodiscard]] bool canvasBackground() const noexcept override { return true; }
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override {
         return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     }
@@ -82,6 +87,7 @@ public:
     void draw(PanelContext& ctx) override;
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
     [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
+    [[nodiscard]] bool canvasBackground() const noexcept override { return true; }
 };
 
 // Unified layer stack: parametric, raster, vector, smart-object and group
@@ -114,6 +120,13 @@ private:
     void drawNoiseReduction(PanelContext& ctx);
     void drawColor();
     void drawHsl();
+
+    // Sections whose GPU nodes do not exist yet start closed.
+    bool toneOpen_ = true;
+    bool noiseOpen_ = true;
+    bool colorOpen_ = false;
+    bool hslOpen_ = false;
+    int hslMode_ = 0;  // hue, saturation, luminance
 
     ExposureParams tone_{};
     bool toneEditing_ = false;  // while a slider is held, the panel owns the values

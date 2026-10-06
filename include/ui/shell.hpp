@@ -1,8 +1,8 @@
 // DarkHouse — application shell (the GuiLayer drawn by GuiEngine).
 //
 // Frame structure, top to bottom:
-//   main menu bar     DarkHouse header, File / View / Help, workspace switcher
-//   status bar        mode, catalog, import progress, GPU
+//   toolbar           File / View / Help, Import, the workspace switcher,
+//                     import activity and the three panel toggles, on one row
 //   workspace         WorkspaceLayoutManager dockspace for the active AppMode,
 //                     with that workspace's open panels docked into it
 //
@@ -35,9 +35,10 @@ public:
 
 private:
     void handleShortcuts(PanelContext& ctx);
-    void drawMainMenuBar(PanelContext& ctx);
+    void drawToolbar(PanelContext& ctx);
+    void drawMenus(PanelContext& ctx);
     void drawWorkspaceSwitcher(PanelContext& ctx);
-    void drawStatusBar(PanelContext& ctx);
+    void drawActivityAndToggles(PanelContext& ctx);
     void drawPanels(PanelContext& ctx);
     void drawImportDialog(PanelContext& ctx);
     void drawAboutDialog(PanelContext& ctx);

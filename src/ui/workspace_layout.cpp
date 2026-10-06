@@ -3,7 +3,6 @@
 #include <imgui_internal.h>  // DockBuilder API, ImHashStr
 
 #include <algorithm>
-#include <initializer_list>
 
 namespace darkhouse::ui {
 namespace {
@@ -44,24 +43,23 @@ WorkspaceLayoutManager::WorkspaceLayoutManager() {
     }
 }
 
-void WorkspaceLayoutManager::applyDefaultPanelSet(Workspace& workspace) {
-    workspace.open.fill(false);
-    auto show = [&](std::initializer_list<PanelId> panels) {
-        for (PanelId panel : panels) workspace.open[index(panel)] = true;
-    };
-    switch (workspace.mode) {
-    case AppMode::CATALOG:
-        show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::ASSET_GRID});
-        break;
-    case AppMode::CANVAS:
-        show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::VIEWPORT, PanelId::FILMSTRIP,
-              PanelId::LAYERS, PanelId::ADJUSTMENTS});
-        break;
-    case AppMode::HYBRID_SPLIT:
-        show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT,
-              PanelId::FILMSTRIP, PanelId::LAYERS, PanelId::ADJUSTMENTS});
-        break;
+bool WorkspaceLayoutManager::inDefaultLayout(AppMode mode, PanelId panel) noexcept {
+    switch (panel) {
+    case PanelId::COLLECTIONS:
+    case PanelId::METADATA: return true;
+    case PanelId::ASSET_GRID: return mode != AppMode::CANVAS;
+    case PanelId::VIEWPORT:
+    case PanelId::FILMSTRIP:
+    case PanelId::LAYERS:
+    case PanelId::ADJUSTMENTS: return mode != AppMode::CATALOG;
+    case PanelId::SEARCH:  // the grid and filmstrip filter bar covers it
+    case PanelId::ENGINE: return false;
     }
+    return false;
+}
+
+void WorkspaceLayoutManager::applyDefaultPanelSet(Workspace& workspace) {
+    for (PanelId panel : allPanels()) workspace.open[index(panel)] = inDefaultLayout(workspace.mode, panel);
 }
 
 void WorkspaceLayoutManager::resetLayout(AppMode mode) noexcept { workspaces_[index(mode)].resetPending = true; }
@@ -142,13 +140,10 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
     ImGuiID center = root;
     switch (workspace.mode) {
     case AppMode::CATALOG: {
-        // | Search      |                 |
         // | Collections |  Library grid   |
         // | Metadata    |                 |
-        ImGuiID left = splitWidth(center, ImGuiDir_Left, 320.0f, 0.16f, 0.30f);
-        const ImGuiID metadata = split(left, ImGuiDir_Down, 0.36f);
-        const ImGuiID search = split(left, ImGuiDir_Up, 0.47f);
-        dock(PanelId::SEARCH, search);
+        ImGuiID left = splitWidth(center, ImGuiDir_Left, 300.0f, 0.15f, 0.28f);
+        const ImGuiID metadata = split(left, ImGuiDir_Down, 0.50f);
         dock(PanelId::COLLECTIONS, left);
         dock(PanelId::METADATA, metadata);
         dock(PanelId::ASSET_GRID, center);
@@ -164,7 +159,6 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         const ImGuiID metadata = split(left, ImGuiDir_Down, 0.50f);
         const ImGuiID filmstrip = splitHeight(center, ImGuiDir_Down, 150.0f, 0.12f, 0.28f);
         dock(PanelId::COLLECTIONS, left);
-        dock(PanelId::SEARCH, left);
         dock(PanelId::METADATA, metadata);
         dock(PanelId::FILMSTRIP, filmstrip);
         dock(PanelId::LAYERS, right);
@@ -183,7 +177,6 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
         const ImGuiID filmstrip = splitHeight(center, ImGuiDir_Down, 150.0f, 0.12f, 0.28f);
         const ImGuiID grid = split(center, ImGuiDir_Left, 0.42f);
         dock(PanelId::COLLECTIONS, left);
-        dock(PanelId::SEARCH, left);
         dock(PanelId::METADATA, metadata);
         dock(PanelId::FILMSTRIP, filmstrip);
         dock(PanelId::ASSET_GRID, grid);

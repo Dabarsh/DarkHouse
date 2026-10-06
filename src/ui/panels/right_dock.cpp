@@ -10,6 +10,7 @@
 #include <glm/vec3.hpp>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -18,6 +19,8 @@
 
 namespace darkhouse::ui {
 namespace {
+
+using theme::u32;
 
 // --- Layer helpers -------------------------------------------------------------
 
@@ -71,6 +74,14 @@ std::size_t rasterCount(const LayerNode& root, const LayerNode* excludeSubtree) 
     std::size_t count = 0;
     root.visit([&](const LayerNode& node, std::size_t) {
         if (node.raster() && !(excludeSubtree && (&node == excludeSubtree || excludeSubtree->isAncestorOf(node)))) ++count;
+    });
+    return count;
+}
+
+std::size_t layerCount(const LayerNode& root) {
+    std::size_t count = 0;
+    root.visit([&](const LayerNode& node, std::size_t) {
+        if (&node != &root) ++count;
     });
     return count;
 }
@@ -163,6 +174,25 @@ ImU32 hsv(float h, float s, float v) {
     return ImGui::GetColorU32(ImVec4(r, g, b, 1.0f));
 }
 
+// Inspector form row: secondary label, then the widget filling the rest.
+void propertyLabel(const char* label) {
+    const float start = ImGui::GetCursorPosX();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(theme::kTextSecondary, "%s", label);
+    ImGui::SameLine(start + ImGui::GetFontSize() * 4.2f);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+}
+
+// Header of a section whose GPU node does not exist yet: says so on the row itself.
+bool previewSectionHeader(const char* title, bool& open) {
+    const float width = pillWidth("Preview");
+    const bool isOpen = sectionHeader(title, open, width);
+    alignRight(width);
+    pill("Preview", theme::kWarning);
+    ImGui::SetItemTooltip("Interface preview: this adjustment does not change the image yet.");
+    return isOpen;
+}
+
 struct HslBand {
     const char* name;
     float hue;  // 0..1
@@ -206,100 +236,139 @@ void LayersPanel::addLayer(PanelContext& ctx, std::unique_ptr<LayerNode> layer) 
 void LayersPanel::draw(PanelContext& ctx) {
     LayerNode& root = ctx.app.document();
     if (selected_ && !containsLayer(root, selected_)) selected_ = nullptr;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float s = theme::scale();
+    const std::size_t count = layerCount(root);
 
-    // Toolbar: add, delete, reorder.
-    if (ImGui::Button("+ Add")) ImGui::OpenPopup("##AddLayer");
-    drawAddMenu(ctx);
-    ImGui::SameLine();
+    // Header row: the document, then add, delete and reorder.
+    {
+        char caption[192];
+        std::snprintf(caption, sizeof caption, "%s  \xC2\xB7  %zu layer%s", root.name().c_str(), count,
+                      count == 1 ? "" : "s");
+        const SmallText small;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(theme::kTextSecondary, "%s", caption);
+    }
     const bool canEdit = selected_ && selected_ != &root;
     const bool canDelete = canEdit && rasterCount(root, selected_) > 0;
-    ImGui::BeginDisabled(!canDelete);
-    if (ImGui::Button("Delete")) {
+    const std::size_t position = canEdit ? indexInParent(*selected_) : 0;
+    const std::size_t siblings = canEdit ? selected_->parent()->childCount() : 0;
+    alignRight(4.0f * iconButtonWidth() + 3.0f * 2.0f * s);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f * s, style.ItemSpacing.y));
+    if (iconButton("##Add", Icon::PLUS, "Add layer")) ImGui::OpenPopup("##AddLayer");
+    drawAddMenu(ctx);
+    ImGui::SameLine();
+    if (iconButton("##Delete", Icon::TRASH, "Delete layer", false, canDelete)) {
         LayerNode* parent = selected_->parent();
         parent->removeChild(*selected_);  // destroyed here
         selected_ = parent == &root ? nullptr : parent;
         invalidateComposite(root);
     }
-    ImGui::EndDisabled();
-    if (canEdit && !canDelete) ImGui::SetItemTooltip("The document keeps at least one raster layer");
+    if (canEdit && !canDelete && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("The document keeps at least one raster layer");
+    }
     ImGui::SameLine();
-    const std::size_t position = canEdit ? indexInParent(*selected_) : 0;
-    ImGui::BeginDisabled(!canEdit || position + 1 >= (canEdit ? selected_->parent()->childCount() : 0));
-    if (ImGui::ArrowButton("##Raise", ImGuiDir_Up)) {
+    if (iconButton("##Raise", Icon::ARROW_UP, "Move up", false, canEdit && position + 1 < siblings)) {
         selected_->parent()->moveChild(position, position + 1);  // children are ordered bottom to top
         invalidateComposite(root);
     }
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Move up");
     ImGui::SameLine();
-    ImGui::BeginDisabled(!canEdit || position == 0);
-    if (ImGui::ArrowButton("##Lower", ImGuiDir_Down)) {
+    if (iconButton("##Lower", Icon::ARROW_DOWN, "Move down", false, canEdit && position > 0)) {
         selected_->parent()->moveChild(position, position - 1);
         invalidateComposite(root);
     }
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Move down");
+    ImGui::PopStyleVar();
 
-    // Stack, top to bottom.
-    const float listHeight = std::max(ImGui::GetContentRegionAvail().y * 0.5f, ImGui::GetFrameHeightWithSpacing() * 4.0f);
-    if (ImGui::BeginChild("##LayerList", ImVec2(0.0f, listHeight), ImGuiChildFlags_Borders)) {
-        ImGui::TextDisabled("%s", root.name().c_str());
+    // Stack, top to bottom: as tall as its rows, between three rows and half the panel.
+    const float rowHeight = ImGui::GetFrameHeight();
+    const float maxHeight = std::max(ImGui::GetContentRegionAvail().y * 0.5f, rowHeight * 3.0f);
+    const float listHeight = std::clamp(rowHeight * static_cast<float>(count), rowHeight * 3.0f, maxHeight);
+    if (ImGui::BeginChild("##LayerList", ImVec2(0.0f, listHeight))) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(style.ItemSpacing.x, 0.0f));  // rows abut
         for (std::size_t i = root.childCount(); i-- > 0;) drawLayerRow(ctx, root.child(i), 0);
+        ImGui::PopStyleVar();
     }
     ImGui::EndChild();
 
     if (selected_) {
         drawProperties(ctx, *selected_);
     } else {
-        ImGui::TextDisabled("Select a layer to edit its properties.");
+        const SmallText small;
+        ImGui::TextColored(theme::kTextSecondary, "Select a layer to edit its properties.");
     }
 }
 
 void LayersPanel::drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth) {
-    const LayerStyle style = layerStyle(layer.type());
+    const LayerStyle look = layerStyle(layer.type());
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float s = theme::scale();
+    const float height = ImGui::GetFrameHeight();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float indent = static_cast<float>(depth) * style.IndentSpacing;
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImGui::PushID(&layer);
-    ImGui::Indent(static_cast<float>(depth) * ImGui::GetStyle().IndentSpacing);
 
-    bool visible = layer.visible();
-    if (ImGui::Checkbox("##Visible", &visible)) {
-        layer.setVisible(visible);
+    // The whole row selects; the visibility toggle sits over it.
+    ImGui::SetNextItemAllowOverlap();
+    if (ImGui::InvisibleButton("##Row", ImVec2(width, height))) selected_ = &layer;
+    const bool hovered = ImGui::IsItemHovered();
+    if (selected_ == &layer) {
+        drawList->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), u32(theme::kSelected), style.FrameRounding);
+    } else if (hovered) {
+        drawList->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), u32(theme::kFillControl), style.FrameRounding);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + 2.0f * s + indent, pos.y));
+    const bool visible = layer.visible();
+    if (iconButton("##Visible", visible ? Icon::EYE : Icon::EYE_OFF, visible ? "Hide layer" : "Show layer")) {
+        layer.setVisible(!visible);
         invalidateComposite(ctx.app.document());
     }
-    ImGui::SetItemTooltip("Visibility");
-    ImGui::SameLine();
-
-    // Type chip.
-    const ImVec2 chipPos = ImGui::GetCursorScreenPos();
-    const float chipWidth = ImGui::CalcTextSize("VEC").x + 8.0f;
-    const float frame = ImGui::GetFrameHeight();
-    ImGui::Dummy(ImVec2(chipWidth, frame));
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    const float inset = frame * 0.18f;
-    drawList->AddRectFilled(ImVec2(chipPos.x, chipPos.y + inset), ImVec2(chipPos.x + chipWidth, chipPos.y + frame - inset),
-                            ImGui::GetColorU32(style.color), 3.0f);
-    const ImVec2 chipText = ImGui::CalcTextSize(style.chip);
-    drawList->AddText(ImVec2(chipPos.x + (chipWidth - chipText.x) * 0.5f, chipPos.y + (frame - chipText.y) * 0.5f),
-                      IM_COL32(20, 20, 22, 255), style.chip);
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s%s", style.description,
-                          style.cpuComposited ? "" : "\nNot drawn yet: GPU compositing of this layer type is a later milestone.");
-    }
-    ImGui::SameLine();
-
-    // Name, opacity and mask badge.
-    char suffix[48];
-    std::snprintf(suffix, sizeof suffix, "%s%3.0f%%", layer.mask() ? "[mask] " : "", layer.opacity() * 100.0f);
-    const float suffixWidth = ImGui::CalcTextSize(suffix).x;
-    ImGui::AlignTextToFramePadding();
-    if (ImGui::Selectable(layer.name().c_str(), selected_ == &layer, ImGuiSelectableFlags_AllowOverlap,
-                          ImVec2(std::max(ImGui::GetContentRegionAvail().x - suffixWidth - 8.0f, 20.0f), 0.0f))) {
-        selected_ = &layer;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", suffix);
-
-    ImGui::Unindent(static_cast<float>(depth) * ImGui::GetStyle().IndentSpacing);
+    const float afterEye = ImGui::GetItemRectMax().x + 4.0f * s;
     ImGui::PopID();
+
+    float nameX = afterEye;
+    float trailing = pos.x + width - 8.0f * s;
+    {
+        const SmallText small;
+        // Type chip: tinted, so the stack is not a column of saturated blocks.
+        const ImVec2 chipText = ImGui::CalcTextSize(look.chip);
+        const float chipWidth = ImGui::CalcTextSize("VEC").x + 8.0f * s;
+        const ImVec2 chipMin(afterEye, std::floor(pos.y + (height - chipText.y - 2.0f * s) * 0.5f));
+        const ImVec2 chipMax(chipMin.x + chipWidth, chipMin.y + chipText.y + 2.0f * s);
+        drawList->AddRectFilled(chipMin, chipMax, u32(look.color, 0.19f), 4.0f * s);
+        drawList->AddText(ImVec2(chipMin.x + (chipWidth - chipText.x) * 0.5f, chipMin.y + 1.0f * s), u32(look.color),
+                          look.chip);
+        if (hovered && ImGui::IsMouseHoveringRect(chipMin, chipMax)) {
+            ImGui::SetTooltip("%s%s", look.description,
+                              look.cpuComposited ? "" : "\nNot drawn yet: GPU compositing of this layer type is a later milestone.");
+        }
+        nameX = chipMax.x + 8.0f * s;
+
+        // Trailing: opacity, and a pill when the layer is masked.
+        char opacity[16];
+        std::snprintf(opacity, sizeof opacity, "%.0f%%", static_cast<double>(layer.opacity()) * 100.0);
+        const ImVec2 opacitySize = ImGui::CalcTextSize(opacity);
+        trailing -= ImGui::CalcTextSize("100%").x;
+        drawList->AddText(ImVec2(pos.x + width - 8.0f * s - opacitySize.x, pos.y + (height - opacitySize.y) * 0.5f),
+                          u32(theme::kTextSecondary), opacity);
+        if (layer.mask()) {
+            const ImVec2 maskText = ImGui::CalcTextSize("Mask");
+            const float maskWidth = maskText.x + 10.0f * s;
+            const ImVec2 maskMin(trailing - 8.0f * s - maskWidth, std::floor(pos.y + (height - maskText.y - 2.0f * s) * 0.5f));
+            const ImVec2 maskMax(maskMin.x + maskWidth, maskMin.y + maskText.y + 2.0f * s);
+            const ImVec4& tint = layer.maskEnabled() ? theme::kAccentBright : theme::kTextTertiary;
+            drawList->AddRectFilled(maskMin, maskMax, u32(tint, 0.16f), (maskMax.y - maskMin.y) * 0.5f);
+            drawList->AddText(ImVec2(maskMin.x + 5.0f * s, maskMin.y + 1.0f * s), u32(tint), "Mask");
+            trailing = maskMin.x;
+        }
+    }
+    drawList->PushClipRect(ImVec2(nameX, pos.y), ImVec2(std::max(trailing - 6.0f * s, nameX), pos.y + height), true);
+    drawList->AddText(ImVec2(nameX, pos.y + style.FramePadding.y), u32(visible ? theme::kText : theme::kTextTertiary),
+                      layer.name().c_str());
+    drawList->PopClipRect();
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + height));  // the next row starts below this one
 
     if (layer.isGroup()) {
         for (std::size_t i = layer.childCount(); i-- > 0;) drawLayerRow(ctx, layer.child(i), depth + 1);
@@ -349,26 +418,30 @@ void LayersPanel::drawAddMenu(PanelContext& ctx) {
 
 void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
     LayerNode& root = ctx.app.document();
-    ImGui::SeparatorText("Properties");
-    if (!ImGui::BeginTable("##LayerProperties", 2, ImGuiTableFlags_SizingStretchProp)) return;
-    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 4.5f);
-    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
-    auto row = [](const char* label) {
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("%s", label);
-        ImGui::TableSetColumnIndex(1);
-        ImGui::SetNextItemWidth(-FLT_MIN);
-    };
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float s = theme::scale();
 
-    row("Name");
+    // The selected layer's properties, as one inset group under the stack.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kFillGroup);
+    const bool visible = ImGui::BeginChild("##LayerProperties", ImVec2(0.0f, 0.0f),
+                                           ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding |
+                                               ImGuiChildFlags_Borders);
+    ImGui::PopStyleColor();
+    if (!visible) {
+        ImGui::EndChild();
+        return;
+    }
+
+    propertyLabel("Name");
     char name[128];
     std::snprintf(name, sizeof name, "%s", layer.name().c_str());
     if (ImGui::InputText("##Name", name, sizeof name)) layer.setName(name);
 
     if (&layer != &root) {
-        row("Blend");
+        // Blend mode and opacity share a row, as in most layer inspectors.
+        propertyLabel("Blend");
+        const float opacityWidth = ImGui::GetFontSize() * 4.4f;
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - opacityWidth - style.ItemInnerSpacing.x, 1.0f));
         if (ImGui::BeginCombo("##Blend", blendModeName(layer.blendMode()))) {
             for (BlendMode mode : {BlendMode::NORMAL, BlendMode::MULTIPLY, BlendMode::SCREEN, BlendMode::OVERLAY,
                                    BlendMode::COLOR_DODGE}) {
@@ -379,56 +452,68 @@ void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
             }
             ImGui::EndCombo();
         }
-        row("Opacity");
+        ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
         float opacity = layer.opacity() * 100.0f;
-        if (ImGui::SliderFloat("##Opacity", &opacity, 0.0f, 100.0f, "%.0f%%")) {
+        ImGui::SetNextItemWidth(opacityWidth);
+        if (ImGui::DragFloat("##Opacity", &opacity, 0.5f, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
             layer.setOpacity(opacity / 100.0f);
             invalidateComposite(root);
         }
-        row("Mask");
+        ImGui::SetItemTooltip("Opacity: drag, or double-click to type");
+
+        propertyLabel("Mask");
         if (!layer.mask()) {
-            if (ImGui::SmallButton("Add Mask")) {
+            if (ImGui::Button("Add Mask")) {
                 layer.addMask(ctx.app.canvasWidth(), ctx.app.canvasHeight());
                 invalidateComposite(root);
             }
         } else {
             bool enabled = layer.maskEnabled();
-            if (ImGui::Checkbox("Enabled", &enabled)) {
+            if (miniCheckbox("##MaskEnabled", enabled, "Enabled")) {
                 layer.setMaskEnabled(enabled);
                 invalidateComposite(root);
             }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Remove")) {
+            ImGui::SameLine(0.0f, 12.0f * s);
+            if (ImGui::Button("Remove")) {
                 layer.removeMask();
                 invalidateComposite(root);
             }
         }
     }
 
-    row("Content");
-    if (const SparseRasterLayer* raster = layer.raster()) {
-        ImGui::Text("%zu of %u tiles, %.1f MB", raster->tileCount(), raster->tilesX() * raster->tilesY(),
-                    static_cast<double>(raster->residentBytes()) / (1024.0 * 1024.0));
-        ImGui::SetItemTooltip("%ux%u FP16, %ux%u tiles allocated on first write", raster->width(), raster->height(),
-                              TILE_SIZE, TILE_SIZE);
-    } else if (const AdjustmentContent* adjustment = layer.adjustment()) {
-        ImGui::Text("%s node, %zu parameter bytes", adjustment->nodeType.c_str(), adjustment->serializedParams.size());
-    } else if (VectorContent* shape = layer.vectorShape()) {
-        ImGui::Text("%zu path verbs", shape->verbs.size());
-        row("Fill");
+    if (VectorContent* shape = layer.vectorShape()) {
+        propertyLabel("Fill");
         ImGui::ColorEdit4("##Fill", shape->fillColor.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
-        row("Stroke");
+        propertyLabel("Stroke");
         ImGui::ColorEdit4("##Stroke", shape->strokeColor.data(), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::DragFloat("##StrokeWidth", &shape->strokeWidth, 0.25f, 0.0f, 200.0f, "%.1f px");
-    } else if (const SmartObjectContent* object = layer.smartObject()) {
-        const AssetRecord* source = ctx.library.findAsset(object->sourceAssetId);
-        ImGui::TextWrapped("%s", source ? source->fileName.c_str() : object->sourceAssetId.c_str());
-    } else if (layer.isGroup()) {
-        ImGui::Text("%zu layer%s, isolated", layer.childCount(), layer.childCount() == 1 ? "" : "s");
     }
-    ImGui::EndTable();
+
+    // What the layer holds, as a footnote.
+    {
+        const SmallText small;
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::kTextSecondary);
+        if (const SparseRasterLayer* raster = layer.raster()) {
+            ImGui::Text("%zu of %u tiles  \xC2\xB7  %.1f MB", raster->tileCount(), raster->tilesX() * raster->tilesY(),
+                        static_cast<double>(raster->residentBytes()) / (1024.0 * 1024.0));
+            ImGui::SetItemTooltip("%ux%u FP16, %ux%u tiles allocated on first write", raster->width(), raster->height(),
+                                  TILE_SIZE, TILE_SIZE);
+        } else if (const AdjustmentContent* adjustment = layer.adjustment()) {
+            ImGui::Text("%s node  \xC2\xB7  %zu parameter bytes", adjustment->nodeType.c_str(),
+                        adjustment->serializedParams.size());
+        } else if (const VectorContent* shape = layer.vectorShape()) {
+            ImGui::Text("%zu path verbs", shape->verbs.size());
+        } else if (const SmartObjectContent* object = layer.smartObject()) {
+            const AssetRecord* source = ctx.library.findAsset(object->sourceAssetId);
+            ImGui::TextWrapped("%s", source ? source->fileName.c_str() : object->sourceAssetId.c_str());
+        } else if (layer.isGroup()) {
+            ImGui::Text("%zu layer%s, isolated", layer.childCount(), layer.childCount() == 1 ? "" : "s");
+        }
+        ImGui::PopStyleColor();
+    }
+    ImGui::EndChild();
 }
 
 // -----------------------------------------------------------------------------
@@ -436,21 +521,10 @@ void LayersPanel::drawProperties(PanelContext& ctx, LayerNode& layer) {
 // -----------------------------------------------------------------------------
 
 void AdjustmentsPanel::draw(PanelContext& ctx) {
-    const AssetRecord* asset = ctx.library.findAsset(ctx.app.activeAssetId());
-    ImGui::TextDisabled("Develop  |  %s", asset ? asset->fileName.c_str() : "document (no photo open)");
-    ImGui::Spacing();
-
-    if (ImGui::CollapsingHeader("Tone", ImGuiTreeNodeFlags_DefaultOpen)) drawTone(ctx);
-    if (ImGui::CollapsingHeader("Noise Reduction", ImGuiTreeNodeFlags_DefaultOpen)) drawNoiseReduction(ctx);
-    if (ImGui::CollapsingHeader("White Balance & Presence", ImGuiTreeNodeFlags_DefaultOpen)) drawColor();
-    if (ImGui::CollapsingHeader("HSL / Color", ImGuiTreeNodeFlags_DefaultOpen)) drawHsl();
-
-    ImGui::Spacing();
-    ImGui::PushTextWrapPos();
-    ImGui::TextDisabled("Tone and noise reduction run live on the GPU develop graph and are saved with the photo. "
-                        "White balance, presence and HSL are interface previews; their GPU nodes are not "
-                        "implemented yet.");
-    ImGui::PopTextWrapPos();
+    drawTone(ctx);
+    drawNoiseReduction(ctx);
+    drawColor();
+    drawHsl();
 }
 
 void AdjustmentsPanel::drawTone(PanelContext& ctx) {
@@ -464,36 +538,48 @@ void AdjustmentsPanel::drawTone(PanelContext& ctx) {
             break;
         }
     }
-    if (!node) {
-        ImGui::TextDisabled("The develop stack has no exposure node.");
-        return;
-    }
 
-    float contrast = tone_.contrast * 100.0f;
-    float highlights = tone_.highlights * 100.0f;
-    float shadows = tone_.shadows * 100.0f;
-    SliderResult results[4];
-    results[0] = adjustmentSlider("Exposure", tone_.exposureEV, -5.0f, 5.0f, 0.0f, "%+.2f EV",
-                                  IM_COL32(20, 20, 20, 255), IM_COL32(235, 235, 235, 255));
-    results[1] = adjustmentSlider("Contrast", contrast, -100.0f, 100.0f, 0.0f, "%+.0f");
-    results[2] = adjustmentSlider("Highlights", highlights, -100.0f, 100.0f, 0.0f, "%+.0f");
-    results[3] = adjustmentSlider("Shadows", shadows, -100.0f, 100.0f, 0.0f, "%+.0f");
-    tone_.contrast = contrast / 100.0f;
-    tone_.highlights = highlights / 100.0f;
-    tone_.shadows = shadows / 100.0f;
-
+    // Reset lives in the header, lit only while there is something to reset.
     bool changed = false;
     bool released = false;
-    for (const SliderResult& result : results) {
-        changed |= result.changed;
-        released |= result.released;
-    }
-    toneEditing_ = ImGui::IsAnyItemActive() && (changed || toneEditing_) && !released;
-    if (ImGui::SmallButton("Reset Tone")) {
+    const bool open = sectionHeader("Tone", toneOpen_, iconButtonWidth());
+    const bool modified = tone_.exposureEV != 0.0f || tone_.contrast != 0.0f || tone_.highlights != 0.0f ||
+                          tone_.shadows != 0.0f;
+    alignRight(iconButtonWidth());
+    if (iconButton("##ResetTone", Icon::RESET, "Reset Tone", false, node && modified)) {
         tone_ = ExposureParams{};
         changed = released = true;
     }
-    if (changed || released) {
+
+    if (open && !node) {
+        const SmallText small;
+        ImGui::TextColored(theme::kTextSecondary, "The develop stack has no exposure node.");
+    }
+    if (open && node) {
+        float contrast = tone_.contrast * 100.0f;
+        float highlights = tone_.highlights * 100.0f;
+        float shadows = tone_.shadows * 100.0f;
+        SliderResult results[4];
+        results[0] = adjustmentSlider("Exposure", tone_.exposureEV, -5.0f, 5.0f, 0.0f, "%+.2f EV");
+        results[1] = adjustmentSlider("Contrast", contrast, -100.0f, 100.0f, 0.0f, "%+.0f");
+        results[2] = adjustmentSlider("Highlights", highlights, -100.0f, 100.0f, 0.0f, "%+.0f");
+        results[3] = adjustmentSlider("Shadows", shadows, -100.0f, 100.0f, 0.0f, "%+.0f");
+        tone_.contrast = contrast / 100.0f;
+        tone_.highlights = highlights / 100.0f;
+        tone_.shadows = shadows / 100.0f;
+        bool sliderChanged = false;
+        bool sliderReleased = false;
+        for (const SliderResult& result : results) {
+            sliderChanged |= result.changed;
+            sliderReleased |= result.released;
+        }
+        toneEditing_ = ImGui::IsAnyItemActive() && (sliderChanged || toneEditing_) && !sliderReleased;
+        changed |= sliderChanged;
+        released |= sliderReleased;
+    } else {
+        toneEditing_ = false;
+    }
+    if (node && (changed || released)) {
         // Live while dragging; written to the catalog when the drag ends.
         ctx.app.postEvent(SetDevelopParamsEvent{*node, ExposureNode::pack(tone_), released});
     }
@@ -509,9 +595,25 @@ void AdjustmentsPanel::drawNoiseReduction(PanelContext& ctx) {
             break;
         }
     }
+    const float s = theme::scale();
 
+    // Header: reset, then the switch that adds or removes the node.
+    bool changed = false;
+    bool released = false;
+    const float checkbox = std::floor(ImGui::GetFontSize() * 0.93f);
+    const float trailing = iconButtonWidth() + 6.0f * s + checkbox + 4.0f * s;
+    const bool open = sectionHeader("Noise Reduction", noiseOpen_, trailing);
+    const DenoiseParams defaults;
+    const bool modified = noise_.luminance != defaults.luminance || noise_.chrominance != defaults.chrominance ||
+                          noise_.detail != defaults.detail || noise_.noiseLevel != defaults.noiseLevel;
+    alignRight(trailing);
+    if (iconButton("##ResetNoise", Icon::RESET, "Reset Noise Reduction", false, node && modified)) {
+        noise_ = DenoiseParams{};
+        changed = released = true;
+    }
+    ImGui::SameLine(0.0f, 6.0f * s);
     bool enabled = node.has_value();
-    if (ImGui::Checkbox("Enable##Denoise", &enabled)) {
+    if (miniCheckbox("##EnableNoise", enabled)) {
         std::vector<EditNodeRecord> next = stack;
         if (enabled) {
             // First in the stack: the noise model assumes scene-linear light, before any tone change.
@@ -521,68 +623,83 @@ void AdjustmentsPanel::drawNoiseReduction(PanelContext& ctx) {
         }
         ctx.app.postEvent(SetDevelopStackEvent{std::move(next), true});
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", node ? "multiscale, GPU" : "off");
-    if (!node) return;
+    ImGui::SetItemTooltip("%s", node ? "Noise reduction is on (multiscale, GPU)" : "Turn noise reduction on");
+    if (!node) {
+        noiseEditing_ = false;
+        if (open) {
+            const SmallText small;
+            ImGui::TextColored(theme::kTextSecondary, "Off. Tick the box to denoise this photo.");
+        }
+        return;
+    }
 
     const auto* denoise = dynamic_cast<const DenoiseNode*>(ctx.app.developNode(*node));
     const DenoiseStatistics stats = denoise ? denoise->statistics() : DenoiseStatistics{};
+    if (open) {
+        float luminance = noise_.luminance * 100.0f;
+        float colour = noise_.chrominance * 100.0f;
+        float detail = noise_.detail * 100.0f;
+        SliderResult results[4];
+        results[0] = adjustmentSlider("Luminance", luminance, 0.0f, 100.0f, 50.0f, "%.0f");
+        results[1] = adjustmentSlider("Color", colour, 0.0f, 100.0f, 50.0f, "%.0f");
+        results[2] = adjustmentSlider("Detail", detail, 0.0f, 100.0f, 20.0f, "%.0f");
+        noise_.luminance = luminance / 100.0f;
+        noise_.chrominance = colour / 100.0f;
+        noise_.detail = detail / 100.0f;
 
-    float luminance = noise_.luminance * 100.0f;
-    float colour = noise_.chrominance * 100.0f;
-    float detail = noise_.detail * 100.0f;
-    SliderResult results[4];
-    results[0] = adjustmentSlider("Luminance", luminance, 0.0f, 100.0f, 50.0f, "%.0f");
-    results[1] = adjustmentSlider("Color", colour, 0.0f, 100.0f, 50.0f, "%.0f");
-    results[2] = adjustmentSlider("Detail", detail, 0.0f, 100.0f, 20.0f, "%.0f");
-    noise_.luminance = luminance / 100.0f;
-    noise_.chrominance = colour / 100.0f;
-    noise_.detail = detail / 100.0f;
-
-    // Noise level: measured from the image on every render, or set by hand
-    // (sigma after the square-root variance stabilisation, see denoise.hpp).
-    constexpr float kMinLevel = 0.001f;
-    constexpr float kMaxLevel = 0.25f;
-    bool automatic = noise_.noiseLevel <= 0.0f;
-    if (ImGui::Checkbox("Auto noise level", &automatic)) {
-        // Manual starts from the current estimate, so the image does not jump.
-        const float measured = stats.sigma[0] > 0.0f ? stats.sigma[0] : 0.02f;
-        noise_.noiseLevel = automatic ? 0.0f : std::clamp(measured, kMinLevel, kMaxLevel);
-        results[3].changed = results[3].released = true;
-    }
-    if (automatic) {
-        if (stats.sigma[0] > 0.0f) {
-            ImGui::TextDisabled("Measured  luma %.4f  color %.4f / %.4f", stats.sigma[0], stats.sigma[1], stats.sigma[2]);
-            ImGui::SetItemTooltip("Noise sigma per opponent channel, estimated from the finest wavelet band\n"
-                                  "(median absolute deviation) in the square-root domain.");
+        // Noise level: measured from the image on every render, or set by hand
+        // (sigma after the square-root variance stabilisation, see denoise.hpp).
+        constexpr float kMinLevel = 0.001f;
+        constexpr float kMaxLevel = 0.25f;
+        bool automatic = noise_.noiseLevel <= 0.0f;
+        if (miniCheckbox("##AutoNoise", automatic, "Auto noise level")) {
+            // Manual starts from the current estimate, so the image does not jump.
+            const float measured = stats.sigma[0] > 0.0f ? stats.sigma[0] : 0.02f;
+            noise_.noiseLevel = automatic ? 0.0f : std::clamp(measured, kMinLevel, kMaxLevel);
+            results[3].changed = results[3].released = true;
         }
+        if (automatic && stats.sigma[0] > 0.0f) {
+            char measured[64];
+            std::snprintf(measured, sizeof measured, "\xCF\x83 %.4f", static_cast<double>(stats.sigma[0]));
+            const SmallText small;
+            alignRight(ImGui::CalcTextSize(measured).x);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(theme::kTextSecondary, "%s", measured);
+            ImGui::SetItemTooltip("Measured noise sigma: luma %.4f, color %.4f / %.4f.\n"
+                                  "Estimated from the finest wavelet band (median absolute deviation)\n"
+                                  "in the square-root domain.",
+                                  static_cast<double>(stats.sigma[0]), static_cast<double>(stats.sigma[1]),
+                                  static_cast<double>(stats.sigma[2]));
+        }
+        if (!automatic) {
+            const SliderResult level = adjustmentSlider("Noise level", noise_.noiseLevel, kMinLevel, kMaxLevel, 0.02f,
+                                                        "%.4f", 0, 0, ImGuiSliderFlags_Logarithmic);
+            results[3].changed |= level.changed;
+            results[3].released |= level.released;
+        }
+        if (stats.levels > 0) {
+            std::string line = std::to_string(stats.levels) + (stats.levels == 1 ? " detail band" : " detail bands");
+            for (const auto& timing : ctx.app.developTimings()) {
+                if (timing.id != *node) continue;
+                char gpuTime[48];
+                std::snprintf(gpuTime, sizeof gpuTime, "  \xC2\xB7  %.1f ms on the GPU", timing.milliseconds);
+                line += gpuTime;
+            }
+            const SmallText small;
+            ImGui::TextColored(theme::kTextSecondary, "%s", line.c_str());
+        }
+
+        bool sliderChanged = false;
+        bool sliderReleased = false;
+        for (const SliderResult& result : results) {
+            sliderChanged |= result.changed;
+            sliderReleased |= result.released;
+        }
+        noiseEditing_ = ImGui::IsAnyItemActive() && (sliderChanged || noiseEditing_) && !sliderReleased;
+        changed |= sliderChanged;
+        released |= sliderReleased;
     } else {
-        const SliderResult level = adjustmentSlider("Noise level", noise_.noiseLevel, kMinLevel, kMaxLevel, 0.02f,
-                                                    "%.4f", 0, 0, ImGuiSliderFlags_Logarithmic);
-        results[3].changed |= level.changed;
-        results[3].released |= level.released;
-    }
-    if (stats.levels > 0) {
-        std::string line = std::to_string(stats.levels) + (stats.levels == 1 ? " detail band" : " detail bands");
-        for (const auto& timing : ctx.app.developTimings()) {
-            if (timing.id != *node) continue;
-            char gpuTime[48];
-            std::snprintf(gpuTime, sizeof gpuTime, ", %.1f ms on the GPU", timing.milliseconds);
-            line += gpuTime;
-        }
-        ImGui::TextDisabled("%s", line.c_str());
-    }
-
-    bool changed = false;
-    bool released = false;
-    for (const SliderResult& result : results) {
-        changed |= result.changed;
-        released |= result.released;
-    }
-    noiseEditing_ = ImGui::IsAnyItemActive() && (changed || noiseEditing_) && !released;
-    if (ImGui::SmallButton("Reset Noise Reduction")) {
-        noise_ = DenoiseParams{};
-        changed = released = true;
+        noiseEditing_ = false;
     }
     if (changed || released) {
         ctx.app.postEvent(SetDevelopParamsEvent{*node, DenoiseNode::pack(noise_), released});
@@ -590,6 +707,7 @@ void AdjustmentsPanel::drawNoiseReduction(PanelContext& ctx) {
 }
 
 void AdjustmentsPanel::drawColor() {
+    if (!previewSectionHeader("White Balance & Presence", colorOpen_)) return;
     adjustmentSlider("Temperature", temperature_, 2000.0f, 12000.0f, 5500.0f, "%.0f K", IM_COL32(70, 120, 230, 255),
                      IM_COL32(240, 200, 70, 255));
     adjustmentSlider("Tint", tint_, -150.0f, 150.0f, 0.0f, "%+.0f", IM_COL32(60, 190, 80, 255),
@@ -601,34 +719,23 @@ void AdjustmentsPanel::drawColor() {
 }
 
 void AdjustmentsPanel::drawHsl() {
-    if (!ImGui::BeginTabBar("##HslMode")) return;
-    auto bandSliders = [&](std::array<float, 8>& values, int mode) {
-        for (std::size_t i = 0; i < kBands.size(); ++i) {
-            const float h = kBands[i].hue;
-            ImU32 left = 0;
-            ImU32 right = 0;
-            switch (mode) {
-            case 0: left = hsv(h - 1.0f / 12.0f, 0.75f, 0.85f); right = hsv(h + 1.0f / 12.0f, 0.75f, 0.85f); break;
-            case 1: left = hsv(h, 0.0f, 0.55f); right = hsv(h, 1.0f, 0.9f); break;
-            default: left = hsv(h, 0.8f, 0.15f); right = hsv(h, 0.35f, 1.0f); break;
-            }
-            adjustmentSlider(kBands[i].name, values[i], -100.0f, 100.0f, 0.0f, "%+.0f", left, right);
+    if (!previewSectionHeader("HSL / Color", hslOpen_)) return;
+    segmented("##HslMode", hslMode_, {"Hue", "Saturation", "Luminance"}, std::floor(ImGui::GetContentRegionAvail().x / 3.0f));
+    std::array<float, 8>& values = hslMode_ == 0 ? hue_ : hslMode_ == 1 ? hslSaturation_ : luminance_;
+    ImGui::PushID(hslMode_);
+    for (std::size_t i = 0; i < kBands.size(); ++i) {
+        const float h = kBands[i].hue;
+        ImU32 left = 0;
+        ImU32 right = 0;
+        switch (hslMode_) {
+        case 0: left = hsv(h - 1.0f / 12.0f, 0.75f, 0.85f); right = hsv(h + 1.0f / 12.0f, 0.75f, 0.85f); break;
+        case 1: left = hsv(h, 0.0f, 0.55f); right = hsv(h, 1.0f, 0.9f); break;
+        default: left = hsv(h, 0.8f, 0.15f); right = hsv(h, 0.35f, 1.0f); break;
         }
-        if (ImGui::SmallButton("Reset")) values.fill(0.0f);
-    };
-    if (ImGui::BeginTabItem("Hue")) {
-        bandSliders(hue_, 0);
-        ImGui::EndTabItem();
+        adjustmentSlider(kBands[i].name, values[i], -100.0f, 100.0f, 0.0f, "%+.0f", left, right);
     }
-    if (ImGui::BeginTabItem("Saturation")) {
-        bandSliders(hslSaturation_, 1);
-        ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Luminance")) {
-        bandSliders(luminance_, 2);
-        ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
+    ImGui::PopID();
+    if (ImGui::Button("Reset")) values.fill(0.0f);
 }
 
 }  // namespace darkhouse::ui

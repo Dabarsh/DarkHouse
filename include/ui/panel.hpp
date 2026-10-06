@@ -45,6 +45,7 @@ struct PanelInfo {
 // panels have drawn.
 struct ShellRequests {
     bool openImportDialog = false;
+    bool toggleSearchPanel = false;  // the filter bar's "all filters" button
 };
 
 // Everything a panel may touch while drawing one frame.
@@ -73,6 +74,8 @@ public:
     [[nodiscard]] virtual ImGuiWindowFlags windowFlags() const noexcept { return ImGuiWindowFlags_None; }
     // Edge-to-edge content (image views): the shell removes window padding.
     [[nodiscard]] virtual bool fullBleed() const noexcept { return false; }
+    // Panels that show photos sit on theme::kCanvas instead of the panel colour.
+    [[nodiscard]] virtual bool canvasBackground() const noexcept { return false; }
     // Views that carry their own toolbar hide the dock tab bar while they are
     // alone in their dock node (it returns as soon as another panel joins).
     [[nodiscard]] virtual bool autoHideTabBar() const noexcept { return false; }
