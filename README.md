@@ -9,7 +9,7 @@ Stack: C++20 · CMake ≥ 3.22 · SQLite 3 (WAL) · Vulkan 1.3 / SPIR-V ·
 GLFW · Dear ImGui (docking, Vulkan backend with dynamic rendering) · GLM ·
 ONNX Runtime
 
-![The Canvas workspace: a test chart rendered through the GPU develop graph, with the layer stack, adjustments, metadata and filmstrip](docs/images/workspace-canvas.png)
+![The Canvas workspace in the blue and black theme: a test chart rendered through the GPU develop graph, with the layer stack, adjustments, metadata and the filmstrip's filter bar](docs/images/workspace-canvas.png)
 
 ---
 
@@ -49,7 +49,7 @@ ONNX Runtime
             ┌──────────────────────────── GuiEngine (FrontEnd) ─────────────────────────────┐
             │ PlatformWindow (GLFW) · Swapchain (FIFO/mailbox, 2 frames in flight)          │
             │ Dear ImGui: GLFW platform + Vulkan renderer (dynamic rendering), docking      │
-            │ GuiLayer = DarkHouseShell: menu · workspace switcher · status bar ·           │
+            │ GuiLayer = DarkHouseShell: toolbar (menus · Import · workspace switcher) ·    │
             │            WorkspaceLayoutManager · panels · LibraryModel (view model)        │
             └───────────────┬───────────────────────────────▲───────────────────────────────┘
                AppEvents    │                               │  FrameContext (mode, canvas texture)
@@ -88,11 +88,12 @@ ONNX Runtime
 | `include/app_controller.hpp` | `DarkHouseApp`, `AppMode`, `AppEvent`, and the `FrontEnd` seam (with its GPU lifecycle) for the UI layer. |
 | `include/platform_window.hpp` | `PlatformWindow`: the GLFW window, surface creation, resize/drop/input tracking. |
 | `include/gui_engine.hpp` | `GuiEngine` (the desktop `FrontEnd`) and the `GuiLayer` interface. |
-| `include/ui/shell.hpp` | `DarkHouseShell`: main menu, workspace switcher, status bar, Import dialog. |
+| `include/ui/shell.hpp` | `DarkHouseShell`: the toolbar (menus, Import, workspace switcher, import activity, panel toggles) and the Import dialog. |
 | `include/ui/workspace_layout.hpp` | `WorkspaceLayoutManager`: one dockspace and default layout per workspace. |
 | `include/ui/library_model.hpp` | `LibraryModel`: collections, search filter, sort and selection shared by the catalog panels. |
 | `include/ui/panels.hpp` | The dockable panels (see [Desktop UI](#desktop-ui)). |
-| `include/ui/widgets.hpp`, `include/ui/theme.hpp` | Shared widgets (ratings, labels, thumbnail cards, gradient sliders) and the DarkHouse look. |
+| `include/ui/theme.hpp` | Design tokens: sizes on a 4 px grid, the blue and black palette, and the ImGui style built from them. |
+| `include/ui/widgets.hpp` | Shared widgets: segmented control, icon and label buttons, inspector slider rows, section headers, status pills, ratings, labels, thumbnail cards, vector icons and popup shadows. |
 | `src/main.cpp` | Command-line interface and front-end selection. |
 | `tests/` | CTest programs (see [Testing](#testing)). |
 
@@ -141,17 +142,21 @@ tooltips, and at 10 Hz while imports are running. An idle window costs about
 
 ## Desktop UI
 
-![The Catalog workspace: search, collections, metadata and the library grid](docs/images/workspace-catalog.png)
+![The Catalog workspace: collections, metadata and the library grid under its filter bar](docs/images/workspace-catalog.png)
 
 DarkHouse opens in a window titled **DarkHouse**, 85% of the screen by
-default. Three workspaces follow the application mode. Switch with the
-centred **Catalog | Canvas | Split** buttons or `Ctrl+1/2/3`:
+default. One toolbar runs along the top: the File, View and Help menus, the
+**Import** button, the centred **Catalog | Canvas | Split** switcher, what the
+importer is doing (with a pill counting failed files), and three toggles that
+show or hide the left panels, the filmstrip and the right panels. Three
+workspaces follow the application mode. Switch with the switcher or
+`Ctrl+1/2/3`:
 
 | Workspace | Focus | Default layout |
 | --- | --- | --- |
-| **Catalog** | Asset grid | Search / Collections / Metadata · Library grid |
-| **Canvas** | Layer stack | Collections + Search / Metadata · Viewport over Filmstrip · Layers / Adjustments |
-| **Split** | Dual view | Collections + Search / Metadata · Library grid + Viewport over Filmstrip · Layers / Adjustments |
+| **Catalog** | Asset grid | Collections / Metadata · Library grid |
+| **Canvas** | Layer stack | Collections / Metadata · Viewport over Filmstrip · Layers / Adjustments |
+| **Split** | Dual view | Collections / Metadata · Library grid + Viewport over Filmstrip · Layers / Adjustments |
 
 Every panel is a dockable ImGui window. Each workspace has its own dockspace
 and its own arrangement, and all of them persist to
@@ -163,16 +168,29 @@ dragged out into their own OS windows, for example a second monitor.
 | Dock | Panel | What it does |
 | --- | --- | --- |
 | Left | **Collections** | All Photographs, Imported This Session, Picks, Rejected, Unrated; the folder tree; smart collections (Five Stars, High ISO, Wide Angle, Telephoto), with counts. |
-| Left | **Search** | Text (file name, camera, lens), minimum rating, flag, colour label, camera, ISO range, sort order. Filtering runs in memory on every keystroke. |
-| Left | **Metadata** | Rating, pick/reject and colour label (editable), camera, lens, exposure, dates, GPS and file details of the selected photo. |
-| Center | **Library** | Virtualized thumbnail grid with zoom, context menu, tooltips and keyboard culling. |
-| Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard. Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% buttons switch zoom. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
-| Center | **Filmstrip** | The current collection as a horizontal strip, kept in sync with the grid. |
-| Right | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, blend mode, opacity, masks, add/delete/reorder. |
-| Right | **Adjustments** | Tone (exposure, contrast, highlights, shadows) and Noise Reduction (luminance, color, detail, automatic or manual noise level) run live on the GPU and are saved to the photo's edit stack on release. White balance, presence and 8-band HSL sliders are previews until their GPU nodes exist. |
+| Left | **Metadata** | Open in Canvas and Copy Path in the title row; rating, pick/reject and colour label (editable) on one row; ISO, focal length, aperture and shutter on one strip; camera, lens, dates, GPS and file details of the selected photo. Long values are clipped, with the full value in the tooltip. |
+| Center | **Library** | Virtualized thumbnail grid with a filter bar, zoom, context menu, tooltips and keyboard culling. |
+| Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard on pure black. Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% control switch zoom. A read-out shows the photo, canvas size, develop nodes and the pixel under the cursor. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
+| Center | **Filmstrip** | The current collection as a horizontal strip, kept in sync with the grid, under the same filter bar. |
+| Right | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, add/delete/reorder, and the selected layer's name, blend mode, opacity and mask in one group below the stack. |
+| Right | **Adjustments** | Tone (exposure, contrast, highlights, shadows) and Noise Reduction (luminance, color, detail, automatic or manual noise level) run live on the GPU and are saved to the photo's edit stack on release. Each section's header carries its reset, and Noise Reduction's the box that turns it on. White balance, presence and 8-band HSL sliders are previews until their GPU nodes exist; they start closed and say **Preview** in their header. |
+| Floating | **Filters** | Every filter in one place: text (file name, camera, lens), minimum rating, flag, colour label, camera, ISO range, sort order. Filtering runs in memory on every keystroke. Opened by the button at the right end of a filter bar, or View → Panels. |
 | Floating | **Engine** | GPU, validation, swapchain and frame-timing diagnostics, and the GPU time of every develop node (View → Panels). |
 
-Keyboard (grid and filmstrip focused):
+The **filter bar** above the grid and the filmstrip shows the collection, how
+many photos are showing, and the filters used while culling: minimum rating,
+flag, colour label and text search, plus sort order and thumbnail size in the
+grid. In the grid it wraps onto further rows when the panel is narrow. In the
+filmstrip, and in the grid of the Split workspace, it stays on one row and
+drops controls from the right; the button at its right end opens the Filters
+panel, which always has all of them.
+
+An adjustment row is a label, a track and the value. The track fills from the
+default to the knob, so a changed setting stands out. Click the value, or
+`Ctrl`+click the track, to type a number; double-click the label to reset.
+
+Keyboard (grid and filmstrip focused; the selected thumbnail's ring is bright
+blue in the panel that takes the keys, grey otherwise):
 
 | Keys | Action |
 | --- | --- |
@@ -185,9 +203,38 @@ Keyboard (grid and filmstrip focused):
 | `Ctrl+I` | Import Photos… (or drop files and folders onto the window) |
 | `Ctrl+Q` | Quit |
 
+On macOS the `Ctrl` shortcuts are on `Cmd`, and the menus say so.
+
 Grid and filmstrip thumbnails are still placeholders tinted from each file's
 content hash; the canvas shows the real photo. Layers → Add → **Test Chart**
 paints a raster layer over it.
+
+### Look
+
+The theme is blue on black, defined once in `include/ui/theme.hpp`:
+
+- **Surfaces.** Photos sit on pure black (`kCanvas`: viewport, grid and
+  filmstrip), which is neutral. Panels (`kWindow` `#080B11`), the toolbar
+  (`kBar`) and popups (`kPopup`) are blue-black, each a step lighter than the
+  one below it.
+- **Fills** are one pale blue (`kTint`) at an alpha, so buttons, fields,
+  groups and separators sit correctly on any surface.
+- **Accent.** `kAccent` `#2F6FEB` marks where input is going: the active
+  workspace, selection, ticked boxes, the default button of a dialog. It
+  carries white text at 4.6:1. `kAccentBright` `#5C9DFF` is for strokes on
+  black: the keyboard focus ring, slider fills, the selected thumbnail.
+- **Text** is `kText` (16.9:1 on a panel), `kTextSecondary` for labels and
+  counts (8.5:1) and `kTextTertiary` for unavailable content only.
+- **Sizes.** Controls are 24 px tall on a 28 px row pitch, with the gap given
+  to the pointer target; list rows are 24 px; the toolbar is 28 px. Radii are
+  5 px for controls, 6 px for groups and 8 px for popups. Thumbnails keep
+  square corners so no pixel of a photo is hidden.
+
+Icons are drawn with the draw list (`drawIcon`), so the UI needs no icon font
+and scales with the display. Menus, popups and floating panels get a soft
+shadow from one call per frame (`drawPopupShadows`). Sizes and fonts are scaled
+by the factor ImGui's platform backend reports, which is 1 on macOS and
+Wayland, where the framebuffer is denser than the window instead.
 
 ## Live photo preview
 
@@ -381,11 +428,17 @@ Xvfb :99 -screen 0 1920x1080x24 &
 DISPLAY=:99 ctest --test-dir build --output-on-failure
 ```
 
-The shell has also been checked with Release GCC and Clang `-Werror` builds,
-an ASan/UBSan build, and scripted UI sessions under synchronization
-validation. Those sessions cover importing, culling, opening assets (which
-rebuilds the develop graph with frames in flight), live exposure edits,
-workspace switches and window resizes.
+The engine and the earlier shell were checked with Release GCC and Clang
+`-Werror` builds, an ASan/UBSan build, and scripted UI sessions under
+synchronization validation (importing, culling, opening assets, which rebuilds
+the develop graph with frames in flight, live exposure edits, workspace
+switches and window resizes). The blue and black UI has so far been checked on
+macOS only: warning-free AppleClang Debug and Release builds, the test suite
+above, the app in all three workspaces with ImGui assertions and Vulkan
+validation on, and a scripted headless session driving the real shell and
+panels against the engine (opening a photo, switching workspaces, dragging and
+typing tone values, toggling noise reduction, rating, the Filters panel and the
+panel toggles).
 
 ## Status
 
@@ -408,10 +461,12 @@ This is the core architecture plus the desktop shell. What works today:
   five blend modes, and parallel tile upload.
 - **App**: event-driven frame loop, three modes, graceful degradation, headless
   batch mode.
-- **Desktop UI**: docking shell with three persistent workspace layouts, the
-  nine panels above, culling shortcuts, import by dialog or drag and drop,
+- **Desktop UI**: docking shell with a single toolbar, three persistent
+  workspace layouts, the nine panels above, a filter bar on the grid and
+  filmstrip, culling shortcuts, import by dialog or drag and drop,
   the opened photo on the canvas with live exposure and noise-reduction
-  editing, idle-aware frame pacing, and a neutral grey theme.
+  editing, idle-aware frame pacing, and a blue and black theme built from
+  design tokens.
 
 Next milestones:
 
