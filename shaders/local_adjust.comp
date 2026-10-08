@@ -1,0 +1,74 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse — local adjustments (LocalAdjustNode in local_adjust_node.hpp).
+//
+// For every enabled mask, in order: the adjusted colour (local white
+// balance, then exposure / highlights / shadows / contrast with the global
+// tone curves, then saturation in Oklab) is blended in by the mask:
+//
+//     colour = mix(colour, adjusted(colour), maskAlpha * amount)
+//
+// With overlayMask >= 0 that mask is also shown as a red overlay (the
+// masking tools' "show overlay"). Alpha passes through.
+
+#include "color_common.glsl"
+#include "tone_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D inputImage;
+layout(set = 0, binding = 1, rgba16f) uniform readonly  image2DArray masks;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D outputImage;
+
+// darkhouse::LocalAdjustGpu (80 bytes, std430).
+struct LocalAdjustGpu {
+    float amount;
+    float exposure;         // stops
+    float highlights;       // [-1, 1]
+    float shadows;          // [-1, 1]
+    float contrast;         // [-1, 1]
+    float saturationScale;
+    uint enabled;
+    uint whiteBalance;      // 0 when the matrix is the identity
+    vec4 wb[3];             // local white-balance matrix rows
+};
+layout(std430, set = 0, binding = 3) readonly buffer Adjustments { LocalAdjustGpu adjustments[]; };
+
+layout(push_constant) uniform Push {
+    uint maskCount;
+    int overlayMask;
+} pc;
+
+vec3 adjusted(vec3 rgb, LocalAdjustGpu a) {
+    if (a.whiteBalance != 0u) rgb = vec3(dot(a.wb[0].xyz, rgb), dot(a.wb[1].xyz, rgb), dot(a.wb[2].xyz, rgb));
+    rgb = applyTone(rgb, a.exposure, a.highlights, a.shadows, a.contrast);
+    if (a.saturationScale != 1.0) {
+        vec3 lab = linearSrgbToOklab(rgb);
+        lab.yz *= a.saturationScale;
+        rgb = oklabToLinearSrgb(lab);
+    }
+    return storable(rgb);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, imageSize(outputImage)))) return;
+    vec4 source = imageLoad(inputImage, coord);
+    vec3 rgb = source.rgb;
+
+    float overlay = 0.0;
+    uint layers = (pc.maskCount + 3u) / 4u;
+    for (uint layer = 0u; layer < layers; ++layer) {
+        vec4 values = imageLoad(masks, ivec3(coord, int(layer)));
+        for (uint channel = 0u; channel < 4u; ++channel) {
+            uint index = layer * 4u + channel;
+            if (index >= pc.maskCount) break;
+            if (int(index) == pc.overlayMask) overlay = values[channel];
+            LocalAdjustGpu a = adjustments[index];
+            float weight = values[channel] * a.amount;
+            if (a.enabled != 0u && weight > 0.0) rgb = mix(rgb, adjusted(rgb, a), weight);
+        }
+    }
+    if (overlay > 0.0) rgb = mix(rgb, vec3(0.9, 0.02, 0.02), 0.6 * overlay);
+    imageStore(outputImage, coord, vec4(storable(rgb), source.a));
+}

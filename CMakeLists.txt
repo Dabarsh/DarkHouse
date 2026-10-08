@@ -53,6 +53,13 @@ endif()
 set(DARKHOUSE_SHADER_SOURCES
     shaders/exposure.comp
     shaders/display_srgb.comp
+    shaders/white_balance.comp
+    shaders/hsl_adjust.comp
+    shaders/color_grading.comp
+    shaders/tone_curve.comp
+    shaders/lens_correction.comp
+    shaders/mask_generate.comp
+    shaders/local_adjust.comp
     shaders/denoise_down0.comp
     shaders/denoise_down.comp
     shaders/denoise_sigma.comp
@@ -60,6 +67,9 @@ set(DARKHOUSE_SHADER_SOURCES
     shaders/denoise_final.comp)
 # Headers pulled in with #include; every shader is rebuilt when one changes.
 set(DARKHOUSE_SHADER_INCLUDES
+    shaders/color_common.glsl
+    shaders/mask_common.glsl
+    shaders/tone_common.glsl
     shaders/denoise_common.glsl
     shaders/denoise_config.h)
 list(TRANSFORM DARKHOUSE_SHADER_INCLUDES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE DARKHOUSE_SHADER_INCLUDE_PATHS)
@@ -172,9 +182,19 @@ add_library(darkhouse_core STATIC
     src/swapchain.cpp
     src/render_pipeline.cpp
     src/layer_stack.cpp
+    src/adjustment_ops.cpp
+    src/raster_paint.cpp
     src/ai_segmentation.cpp
     src/denoise.cpp
     src/denoise_node.cpp
+    src/color_adjust.cpp
+    src/color_nodes.cpp
+    src/tone_curve.cpp
+    src/lens_database.cpp
+    src/lens_correction.cpp
+    src/develop_stack.cpp
+    src/mask_engine.cpp
+    src/local_adjust_node.cpp
     src/image_decoder.cpp
     src/ui/library_model.cpp
     include/app_controller.hpp
@@ -186,9 +206,19 @@ add_library(darkhouse_core STATIC
     include/swapchain.hpp
     include/render_pipeline.hpp
     include/layer_stack.hpp
+    include/adjustment_ops.hpp
+    include/raster_paint.hpp
     include/ai_segmentation.hpp
     include/denoise.hpp
     include/denoise_node.hpp
+    include/color_adjust.hpp
+    include/color_nodes.hpp
+    include/tone_curve.hpp
+    include/lens_database.hpp
+    include/lens_correction.hpp
+    include/develop_stack.hpp
+    include/mask_engine.hpp
+    include/local_adjust_node.hpp
     include/image_decoder.hpp
     src/tiff_reader.hpp
     src/parallel.hpp
@@ -219,9 +249,16 @@ if(DARKHOUSE_GUI)
         src/ui/workspace_layout.cpp
         src/ui/theme.cpp
         src/ui/widgets.cpp
+        src/ui/develop_sections.cpp
+        src/ui/masking.cpp
+        src/ui/canvas_state.cpp
+        src/ui/canvas_tools.cpp
         src/ui/panels/left_dock.cpp
         src/ui/panels/center_dock.cpp
-        src/ui/panels/right_dock.cpp
+        src/ui/panels/develop_panel.cpp
+        src/ui/panels/masking_panel.cpp
+        src/ui/panels/canvas_panels.cpp
+        src/ui/panels/canvas_tool_panels.cpp
         include/platform_window.hpp
         include/gui_engine.hpp
         include/ui/shell.hpp
@@ -229,6 +266,10 @@ if(DARKHOUSE_GUI)
         include/ui/workspace_layout.hpp
         include/ui/theme.hpp
         include/ui/widgets.hpp
+        include/ui/develop_sections.hpp
+        include/ui/masking.hpp
+        include/ui/canvas_state.hpp
+        include/ui/canvas_tools.hpp
         include/ui/panels.hpp)
     target_link_libraries(darkhouse_gui PUBLIC darkhouse_core DarkHouse::imgui glfw glm::glm)
     target_include_directories(darkhouse_gui PRIVATE "${CMAKE_BINARY_DIR}/generated")  # darkhouse_ui_font.hpp
@@ -310,6 +351,42 @@ if(DARKHOUSE_BUILD_TESTS)
     add_test(NAME layer_stack COMMAND darkhouse_layer_stack_test)
     set_tests_properties(layer_stack PROPERTIES LABELS "layers" TIMEOUT 120)
 
+    add_executable(darkhouse_color_adjust_test tests/color_adjust_test.cpp)
+    target_link_libraries(darkhouse_color_adjust_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_color_adjust_test)
+    add_test(NAME color_adjust COMMAND darkhouse_color_adjust_test)
+    set_tests_properties(color_adjust PROPERTIES LABELS "color" TIMEOUT 60)
+
+    add_executable(darkhouse_lens_correction_test tests/lens_correction_test.cpp)
+    target_link_libraries(darkhouse_lens_correction_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_lens_correction_test)
+    add_test(NAME lens_correction COMMAND darkhouse_lens_correction_test)
+    set_tests_properties(lens_correction PROPERTIES LABELS "color" TIMEOUT 60)
+
+    add_executable(darkhouse_color_gpu_test tests/color_gpu_test.cpp)
+    target_link_libraries(darkhouse_color_gpu_test PRIVATE darkhouse_core)
+    target_compile_definitions(darkhouse_color_gpu_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+    darkhouse_apply_build_flags(darkhouse_color_gpu_test)
+    add_test(NAME color_gpu COMMAND darkhouse_color_gpu_test)
+    set_tests_properties(color_gpu PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS "color;vulkan" TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
+
+    add_executable(darkhouse_mask_engine_test tests/mask_engine_test.cpp)
+    target_link_libraries(darkhouse_mask_engine_test PRIVATE darkhouse_core)
+    darkhouse_apply_build_flags(darkhouse_mask_engine_test)
+    add_test(NAME mask_engine COMMAND darkhouse_mask_engine_test)
+    set_tests_properties(mask_engine PROPERTIES LABELS "masking" TIMEOUT 60)
+
+    add_executable(darkhouse_mask_gpu_test tests/mask_gpu_test.cpp)
+    target_link_libraries(darkhouse_mask_gpu_test PRIVATE darkhouse_core)
+    target_compile_definitions(darkhouse_mask_gpu_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+    darkhouse_apply_build_flags(darkhouse_mask_gpu_test)
+    add_test(NAME mask_gpu COMMAND darkhouse_mask_gpu_test)
+    set_tests_properties(mask_gpu PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS "masking;vulkan" TIMEOUT 120
+        ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
+
     add_executable(darkhouse_denoise_test tests/denoise_test.cpp)
     target_link_libraries(darkhouse_denoise_test PRIVATE darkhouse_core)
     darkhouse_apply_build_flags(darkhouse_denoise_test)
@@ -358,6 +435,18 @@ if(DARKHOUSE_BUILD_TESTS)
         # hazards (e.g. layout transitions vs. present) that core checks miss.
         set_tests_properties(present_smoke PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "gui;vulkan" TIMEOUT 120
+            ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
+
+        # The desktop shell end to end: workspace tabs, the colour pipeline
+        # against its CPU references, and frame pacing during a slider drag.
+        add_executable(darkhouse_workspace_gui_test tests/workspace_gui_test.cpp)
+        target_link_libraries(darkhouse_workspace_gui_test PRIVATE darkhouse_gui darkhouse_stb)
+        target_compile_definitions(darkhouse_workspace_gui_test PRIVATE DARKHOUSE_SHADER_DIR="${DARKHOUSE_SHADER_OUTPUT_DIR}")
+        target_include_directories(darkhouse_workspace_gui_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
+        darkhouse_apply_build_flags(darkhouse_workspace_gui_test)
+        add_test(NAME workspace_gui COMMAND darkhouse_workspace_gui_test "${CMAKE_CURRENT_BINARY_DIR}/test_work")
+        set_tests_properties(workspace_gui PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "gui;vulkan;color" TIMEOUT 300
             ENVIRONMENT "VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true")
     endif()
 endif()

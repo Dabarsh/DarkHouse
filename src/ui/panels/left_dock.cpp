@@ -337,7 +337,7 @@ void MetadataPanel::draw(PanelContext& ctx) {
     ImGui::SetItemTooltip("%s", asset->fileName.c_str());
     alignRight(actions);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f * s, style.ItemSpacing.y));
-    if (iconButton("##Open", Icon::OPEN, "Open in Canvas  (Enter)")) ctx.app.postEvent(OpenAssetEvent{asset->id});
+    if (iconButton("##Open", Icon::OPEN, "Open Photo  (Enter)")) ctx.app.postEvent(OpenAssetEvent{asset->id});
     ImGui::SameLine();
     if (iconButton("##CopyPath", Icon::COPY, "Copy Path")) ImGui::SetClipboardText(asset->filePath.c_str());
     ImGui::PopStyleVar();

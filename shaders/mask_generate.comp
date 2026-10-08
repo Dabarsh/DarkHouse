@@ -1,0 +1,52 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse — mask generation (MaskEngine in mask_engine.hpp).
+//
+// Evaluates every mask of a local_adjust node at every pixel: its components
+// in order (brush coverage from the brush texture, gradients analytically,
+// ranges against the source colour), combined and optionally inverted. Mask
+// i is written to layer i / 4, channel i % 4 of an RGBA16F array texture.
+
+#include "color_common.glsl"
+#include "mask_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D sourceImage;
+layout(set = 0, binding = 1, rgba16f) uniform readonly  image2DArray brushes;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2DArray masks;
+layout(std430, set = 0, binding = 3) readonly buffer Components { MaskComponentGpu components[]; };
+// darkhouse::MaskRecordGpu: first component, component count, invert, 0.
+layout(std430, set = 0, binding = 4) readonly buffer Masks { uvec4 maskRecords[]; };
+
+layout(push_constant) uniform Push {
+    uint maskCount;
+} pc;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(sourceImage);
+    if (any(greaterThanEqual(coord, size))) return;
+    vec3 lab = linearSrgbToOklab(max(imageLoad(sourceImage, coord).rgb, vec3(0.0)));
+    vec2 pixel = vec2(coord) + 0.5;
+
+    uint layers = (pc.maskCount + 3u) / 4u;
+    for (uint layer = 0u; layer < layers; ++layer) {
+        vec4 values = vec4(0.0);
+        for (uint channel = 0u; channel < 4u; ++channel) {
+            uint index = layer * 4u + channel;
+            if (index >= pc.maskCount) break;
+            uvec4 record = maskRecords[index];
+            float mask = 0.0;
+            for (uint i = 0u; i < record.y; ++i) {
+                MaskComponentGpu c = components[record.x + i];
+                float brush = 0.0;
+                if (c.shape == SHAPE_BRUSH) brush = imageLoad(brushes, ivec3(coord, int(c.brushSlot / 4u)))[c.brushSlot % 4u];
+                mask = combineMask(mask, c, componentAlpha(c, pixel, vec2(size), lab, brush));
+            }
+            if (record.z != 0u) mask = 1.0 - mask;
+            values[channel] = clamp(mask, 0.0, 1.0);
+        }
+        imageStore(masks, ivec3(coord, int(layer)), values);
+    }
+}

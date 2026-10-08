@@ -2,13 +2,16 @@
 #pragma once
 
 #include "asset_manager.hpp"
+#include "tone_curve.hpp"
 #include "ui/panel.hpp"
 
 #include <imgui.h>
 
 #include <cstdint>
 #include <initializer_list>
+#include <span>
 #include <string>
+#include <utility>
 
 namespace darkhouse::ui {
 
@@ -83,6 +86,12 @@ bool colorLabelPicker(const char* id, int& label, bool allowAny);
 struct SliderResult {
     bool changed = false;   // value changed this frame (while dragging too)
     bool released = false;  // an edit finished this frame: persist now
+
+    SliderResult& operator|=(const SliderResult& other) noexcept {
+        changed |= other.changed;
+        released |= other.released;
+        return *this;
+    }
 };
 // Inspector row: label | track | value. The value has its own right-aligned
 // slot, so it never moves and the knob never covers it; clicking it types a
@@ -92,6 +101,27 @@ struct SliderResult {
 SliderResult adjustmentSlider(const char* label, float& value, float min, float max, float defaultValue,
                               const char* format, ImU32 gradientLeft = 0, ImU32 gradientRight = 0,
                               ImGuiSliderFlags flags = ImGuiSliderFlags_None);
+
+// Slider of an explicit width without a label column (wheel columns, tool
+// options). Double-click resets to `defaultValue`.
+SliderResult compactSlider(const char* id, float& value, float min, float max, float defaultValue, const char* format,
+                           float width, ImGuiSliderFlags flags = ImGuiSliderFlags_None);
+
+// Colour-grading wheel: a hue / saturation disc whose handle sets the hue
+// (angle) and saturation (distance from the centre, 0..100). The disc shows
+// the Oklch hues the grading shader applies. Double-click resets to neutral.
+SliderResult colorWheel(const char* id, float& hue, float& saturation, float diameter);
+
+// Point-curve editor in a square of `size` pixels: drag a point to move it,
+// click elsewhere to add one on the curve (up to kMaxCurvePoints), double-
+// or right-click an inner point to remove it. The end points stay the ends.
+// `others` are drawn faintly behind (the other channels' curves).
+SliderResult curveEditor(const char* id, Curve& curve, ImU32 color, float size,
+                         std::span<const std::pair<const Curve*, ImU32>> others = {});
+
+// sRGB display colour of an Oklch colour (lightness, chroma, hue in degrees),
+// clipped to the displayable range.
+[[nodiscard]] ImU32 oklchColor(float lightness, float chroma, float hueDegrees, float alpha = 1.0f);
 
 // --- Layout ----------------------------------------------------------------------
 // Small secondary caption heading a group of rows ("Library", "Camera").

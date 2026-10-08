@@ -2,9 +2,12 @@
 
 #include "ui/theme.hpp"
 
-#include <imgui_internal.h>  // TempInputIsActive, window list for popup shadows
+#include "color_adjust.hpp"
+
+#include <imgui_internal.h>  // TempInputIsActive, MarkItemEdited, window list for popup shadows
 
 #include <glm/common.hpp>
+#include <glm/geometric.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
@@ -15,6 +18,9 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <span>
+#include <utility>
+#include <vector>
 
 namespace darkhouse::ui {
 namespace {
@@ -571,7 +577,7 @@ SliderResult adjustmentSlider(const char* label, float& value, float min, float 
     const float rowStart = ImGui::GetCursorPosX();
     ImGui::AlignTextToFramePadding();
     ImGui::PushStyleColor(ImGuiCol_Text, theme::kTextSecondary);
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(label, ImGui::FindRenderedTextEnd(label));  // "Name##id" shows "Name"
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Double-click to reset");
@@ -639,6 +645,245 @@ SliderResult adjustmentSlider(const char* label, float& value, float min, float 
     if (!typing) {
         drawList->AddText(ImVec2(slot.x + valueWidth - ImGui::CalcTextSize(text).x, slot.y + style.FramePadding.y),
                           u32(modified ? theme::kText : theme::kTextSecondary), text);
+    }
+    ImGui::PopID();
+    return result;
+}
+
+// -----------------------------------------------------------------------------
+// Compact slider, colour wheel
+// -----------------------------------------------------------------------------
+
+SliderResult compactSlider(const char* id, float& value, float min, float max, float defaultValue, const char* format,
+                           float width, ImGuiSliderFlags flags) {
+    SliderResult result;
+    ImGui::SetNextItemWidth(width);
+    result.changed = ImGui::SliderFloat(id, &value, min, max, format, flags);
+    result.released = ImGui::IsItemDeactivatedAfterEdit();
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && value != defaultValue) {
+        value = defaultValue;
+        result.changed = result.released = true;
+    }
+    return result;
+}
+
+ImU32 oklchColor(float lightness, float chroma, float hueDegrees, float alpha) {
+    const float angle = hueDegrees * 3.14159265f / 180.0f;
+    const Rgb linear = oklabToLinearSrgb({lightness, chroma * std::cos(angle), chroma * std::sin(angle)});
+    auto encode = [](float v) {
+        v = std::clamp(v, 0.0f, 1.0f);
+        v = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+        return v;
+    };
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(encode(linear[0]), encode(linear[1]), encode(linear[2]), alpha));
+}
+
+SliderResult colorWheel(const char* id, float& hue, float& saturation, float diameter) {
+    SliderResult result;
+    ImGui::PushID(id);
+    const glm::vec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##wheel", ImVec2(diameter, diameter));
+    const ImGuiID itemId = ImGui::GetItemID();
+    const float radius = diameter * 0.5f - 2.0f;
+    const glm::vec2 center = origin + glm::vec2(diameter * 0.5f);
+
+    if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        // Screen y points down; hue angles run counter-clockwise from +x.
+        const glm::vec2 offset = glm::vec2(ImGui::GetIO().MousePos) - center;
+        const float distance = std::min(glm::length(offset) / radius, 1.0f);
+        float angle = std::atan2(-offset.y, offset.x) * 180.0f / 3.14159265f;
+        if (angle < 0.0f) angle += 360.0f;
+        const float newSaturation = distance * 100.0f;
+        if (newSaturation != saturation || angle != hue) {
+            hue = angle;
+            saturation = newSaturation;
+            result.changed = true;
+            ImGui::MarkItemEdited(itemId);
+        }
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        saturation = 0.0f;
+        result.changed = result.released = true;
+    }
+    result.released |= ImGui::IsItemDeactivatedAfterEdit();
+
+    // Disc: neutral centre fading to the tint colours at the rim.
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    constexpr int kSegments = 72;
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+    const ImU32 centreColour = oklchColor(0.62f, 0.0f, 0.0f);
+    drawList->PrimReserve(kSegments * 3, kSegments * 3);
+    for (int i = 0; i < kSegments; ++i) {
+        const float a0 = static_cast<float>(i) / kSegments * 360.0f;
+        const float a1 = static_cast<float>(i + 1) / kSegments * 360.0f;
+        const auto rim = [&](float degrees) {
+            const float r = degrees * 3.14159265f / 180.0f;
+            return ImVec2(center.x + radius * std::cos(r), center.y - radius * std::sin(r));
+        };
+        const auto base = static_cast<ImDrawIdx>(drawList->_VtxCurrentIdx);
+        drawList->PrimWriteVtx(ImVec2(center.x, center.y), uv, centreColour);
+        drawList->PrimWriteVtx(rim(a0), uv, oklchColor(0.62f, 0.13f, a0));
+        drawList->PrimWriteVtx(rim(a1), uv, oklchColor(0.62f, 0.13f, a1));
+        drawList->PrimWriteIdx(base);
+        drawList->PrimWriteIdx(static_cast<ImDrawIdx>(base + 1));
+        drawList->PrimWriteIdx(static_cast<ImDrawIdx>(base + 2));
+    }
+    drawList->AddCircle(ImVec2(center.x, center.y), radius, IM_COL32(0, 0, 0, 140), kSegments, 1.0f);
+
+    // Handle at (hue, saturation).
+    const float angle = hue * 3.14159265f / 180.0f;
+    const glm::vec2 handle = center + glm::vec2(std::cos(angle), -std::sin(angle)) * (radius * saturation / 100.0f);
+    const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+    drawList->AddCircleFilled(ImVec2(handle.x, handle.y), hot ? 6.0f : 5.0f, oklchColor(0.7f, 0.13f * saturation / 100.0f, hue));
+    drawList->AddCircle(ImVec2(handle.x, handle.y), hot ? 6.0f : 5.0f, IM_COL32(255, 255, 255, 230), 16, 1.5f);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hue %.0f, saturation %.0f\nDouble-click to reset", hue, saturation);
+    ImGui::PopID();
+    return result;
+}
+
+// -----------------------------------------------------------------------------
+// Curve editor
+// -----------------------------------------------------------------------------
+
+SliderResult curveEditor(const char* id, Curve& curve, ImU32 color, float size,
+                         std::span<const std::pair<const Curve*, ImU32>> others) {
+    SliderResult result;
+    ImGui::PushID(id);
+    constexpr float kHandle = 5.0f;     // point radius, pixels
+    constexpr float kPick = 9.0f;       // how close a click must be to grab a point
+    constexpr float kGap = 2.0f / 256;  // minimum x distance between neighbours
+    const glm::vec2 origin = glm::vec2(ImGui::GetCursorScreenPos()) + glm::vec2(kHandle);
+    const float side = std::max(size - 2.0f * kHandle, 32.0f);
+    ImGui::InvisibleButton("##curve", ImVec2(side + 2.0f * kHandle, side + 2.0f * kHandle),
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const ImGuiID itemId = ImGui::GetItemID();
+    const bool hovered = ImGui::IsItemHovered();
+    auto toScreen = [&](CurvePoint p) { return origin + glm::vec2(p.x, 1.0f - p.y) * side; };
+    auto toCurve = [&](glm::vec2 s) {
+        const glm::vec2 v = (s - origin) / side;
+        return CurvePoint{std::clamp(v.x, 0.0f, 1.0f), std::clamp(1.0f - v.y, 0.0f, 1.0f)};
+    };
+
+    // An identity curve is edited as its two corners.
+    if (curve.count < 2) {
+        curve = Curve{};
+        curve.count = 2;
+        curve.points[0] = {0.0f, 0.0f};
+        curve.points[1] = {1.0f, 1.0f};
+    }
+    const glm::vec2 mouse = ImGui::GetIO().MousePos;
+    auto nearest = [&]() {
+        int best = -1;
+        float bestDistance = kPick;
+        for (std::uint32_t i = 0; i < curve.count; ++i) {
+            const float distance = glm::length(toScreen(curve.points[i]) - mouse);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = static_cast<int>(i);
+            }
+        }
+        return best;
+    };
+
+    // The dragged point and the grab offset live in ImGui's state storage.
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    const ImGuiID dragKey = ImGui::GetID("drag");
+    const ImGuiID offsetXKey = ImGui::GetID("offsetX");
+    const ImGuiID offsetYKey = ImGui::GetID("offsetY");
+    int dragged = storage->GetInt(dragKey, -1);
+
+    if (hovered && (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+        const int hit = nearest();
+        if (hit > 0 && hit + 1 < static_cast<int>(curve.count)) {
+            for (std::uint32_t i = static_cast<std::uint32_t>(hit); i + 1 < curve.count; ++i) curve.points[i] = curve.points[i + 1];
+            --curve.count;
+            result.changed = result.released = true;
+        }
+        dragged = -1;
+    } else if (ImGui::IsItemActivated() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        dragged = nearest();
+        glm::vec2 grab(0.0f);
+        if (dragged < 0 && curve.count < kMaxCurvePoints) {
+            // A new point on the curve below the cursor, between its neighbours.
+            const CurvePoint at = toCurve(mouse);
+            std::uint32_t slot = 0;
+            while (slot < curve.count && curve.points[slot].x < at.x) ++slot;
+            const bool roomLeft = slot == 0 || at.x - curve.points[slot - 1].x >= kGap;
+            const bool roomRight = slot == curve.count || curve.points[slot].x - at.x >= kGap;
+            if (slot > 0 && slot < curve.count && roomLeft && roomRight) {
+                const CurvePoint onCurve{at.x, evaluateCurve(curve, at.x)};
+                for (std::uint32_t i = curve.count; i > slot; --i) curve.points[i] = curve.points[i - 1];
+                curve.points[slot] = onCurve;
+                ++curve.count;
+                dragged = static_cast<int>(slot);
+                result.changed = true;
+                ImGui::MarkItemEdited(itemId);
+            }
+        }
+        if (dragged >= 0) grab = toScreen(curve.points[static_cast<std::size_t>(dragged)]) - mouse;
+        storage->SetFloat(offsetXKey, grab.x);
+        storage->SetFloat(offsetYKey, grab.y);
+    }
+    if (dragged >= 0 && dragged < static_cast<int>(curve.count) && ImGui::IsItemActive() &&
+        ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const glm::vec2 grab(storage->GetFloat(offsetXKey), storage->GetFloat(offsetYKey));
+        CurvePoint moved = toCurve(mouse + grab);
+        const auto i = static_cast<std::size_t>(dragged);
+        const float lo = i == 0 ? 0.0f : curve.points[i - 1].x + kGap;
+        const float hi = i + 1 == curve.count ? 1.0f : curve.points[i + 1].x - kGap;
+        moved.x = std::clamp(moved.x, std::min(lo, hi), std::max(lo, hi));
+        if (!(moved == curve.points[i])) {
+            curve.points[i] = moved;
+            result.changed = true;
+            ImGui::MarkItemEdited(itemId);
+        }
+    }
+    if (!ImGui::IsItemActive()) dragged = -1;
+    storage->SetInt(dragKey, dragged);
+    result.released |= ImGui::IsItemDeactivatedAfterEdit();
+
+    // Background, quarter grid and the identity diagonal.
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const glm::vec2 end = origin + glm::vec2(side);
+    drawList->AddRectFilled(origin, end, IM_COL32(24, 24, 26, 255));
+    for (int q = 1; q < 4; ++q) {
+        const float t = side * static_cast<float>(q) / 4.0f;
+        drawList->AddLine(ImVec2(origin.x + t, origin.y), ImVec2(origin.x + t, end.y), IM_COL32(255, 255, 255, 22));
+        drawList->AddLine(ImVec2(origin.x, origin.y + t), ImVec2(end.x, origin.y + t), IM_COL32(255, 255, 255, 22));
+    }
+    drawList->AddLine(ImVec2(origin.x, end.y), ImVec2(end.x, origin.y), IM_COL32(255, 255, 255, 40));
+    drawList->AddRect(origin, end, IM_COL32(255, 255, 255, 40));
+
+    // Curves, sampled every other pixel.
+    const int samples = std::max(static_cast<int>(side / 2.0f), 16);
+    std::vector<ImVec2> line(static_cast<std::size_t>(samples) + 1);
+    auto drawCurve = [&](const Curve& c, ImU32 lineColor, float thickness) {
+        for (int s = 0; s <= samples; ++s) {
+            const float x = static_cast<float>(s) / static_cast<float>(samples);
+            const glm::vec2 point = toScreen({x, evaluateCurve(c, x)});
+            line[static_cast<std::size_t>(s)] = ImVec2(point.x, point.y);
+        }
+        drawList->AddPolyline(line.data(), static_cast<int>(line.size()), lineColor, thickness);
+    };
+    drawList->PushClipRect(origin - glm::vec2(1.0f), end + glm::vec2(1.0f), true);
+    for (const auto& [other, otherColor] : others) {
+        if (other && !isIdentity(*other)) drawCurve(*other, (otherColor & ~IM_COL32_A_MASK) | IM_COL32(0, 0, 0, 90), 1.0f);
+    }
+    drawCurve(curve, color, 2.0f);
+    drawList->PopClipRect();
+
+    const int hot = hovered && !ImGui::IsItemActive() ? nearest() : dragged;
+    for (std::uint32_t i = 0; i < curve.count; ++i) {
+        const glm::vec2 p = toScreen(curve.points[i]);
+        const bool highlight = static_cast<int>(i) == hot;
+        drawList->AddCircleFilled(ImVec2(p.x, p.y), highlight ? kHandle + 1.0f : kHandle, IM_COL32(20, 20, 22, 255));
+        drawList->AddCircle(ImVec2(p.x, p.y), highlight ? kHandle + 1.0f : kHandle, color, 16, 1.5f);
+    }
+    if (hovered || ImGui::IsItemActive()) {
+        const CurvePoint at = dragged >= 0 ? curve.points[static_cast<std::size_t>(dragged)] : toCurve(mouse);
+        const float output = dragged >= 0 ? at.y : evaluateCurve(curve, at.x);
+        ImGui::SetTooltip("Input %.0f%%  ->  Output %.0f%%\nClick to add a point, double-click a point to remove it",
+                          at.x * 100.0f, output * 100.0f);
     }
     ImGui::PopID();
     return result;

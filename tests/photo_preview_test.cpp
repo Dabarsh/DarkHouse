@@ -111,13 +111,16 @@ public:
     [[nodiscard]] bool interactive() const noexcept override { return false; }
 
     void drawFrame(DarkHouseApp& app, const FrameContext& frame) override {
+        // The develop graph renders asynchronously: read back only once the
+        // canvas reflects every edit (the run does not end while it is busy).
+        if (app.developBusy()) return;
         const PhotoStatus& photo = app.photo();
         switch (step_) {
         case 0:  // photo on the canvas
             if (photo.state == PhotoStatus::State::READY && photo.assetId == photo_ && capture(frame, baseline)) {
                 ExposureParams params;
                 params.exposureEV = 1.0f;
-                app.postEvent(SetDevelopParamsEvent{0, ExposureNode::pack(params), false});
+                app.postEvent(SetDevelopParamsEvent{0, ExposureNode::pack(params), false, "exposure"});
                 step_ = 1;
             }
             break;

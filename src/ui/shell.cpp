@@ -1,5 +1,6 @@
 #include "ui/shell.hpp"
 
+#include "ui/canvas_tools.hpp"
 #include "ui/panels.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -18,13 +19,14 @@
 namespace darkhouse::ui {
 namespace {
 
-constexpr std::array<AppMode, kWorkspaceCount> kModes{AppMode::CATALOG, AppMode::CANVAS, AppMode::HYBRID_SPLIT};
+const std::array<AppMode, kWorkspaceCount>& kModes = workspaceModes();
 
 ImGuiKey workspaceKey(AppMode mode) {
     switch (mode) {
     case AppMode::CATALOG: return ImGuiKey_1;
-    case AppMode::CANVAS: return ImGuiKey_2;
-    case AppMode::HYBRID_SPLIT: return ImGuiKey_3;
+    case AppMode::DEVELOP: return ImGuiKey_2;
+    case AppMode::CANVAS: return ImGuiKey_3;
+    case AppMode::HYBRID_SPLIT: return ImGuiKey_4;
     }
     return ImGuiKey_None;
 }
@@ -32,8 +34,9 @@ ImGuiKey workspaceKey(AppMode mode) {
 const char* workspaceDigit(AppMode mode) {
     switch (mode) {
     case AppMode::CATALOG: return "1";
-    case AppMode::CANVAS: return "2";
-    case AppMode::HYBRID_SPLIT: return "3";
+    case AppMode::DEVELOP: return "2";
+    case AppMode::CANVAS: return "3";
+    case AppMode::HYBRID_SPLIT: return "4";
     }
     return "";
 }
@@ -49,6 +52,11 @@ std::unique_ptr<Panel> makePanel(PanelId id) {
     case PanelId::LAYERS: return std::make_unique<LayersPanel>();
     case PanelId::ADJUSTMENTS: return std::make_unique<AdjustmentsPanel>();
     case PanelId::ENGINE: return std::make_unique<EnginePanel>();
+    case PanelId::MASKING: return std::make_unique<MaskingPanel>();
+    case PanelId::PROPERTIES: return std::make_unique<PropertiesPanel>();
+    case PanelId::TOOLS: return std::make_unique<ToolsPanel>();
+    case PanelId::CHANNELS: return std::make_unique<ChannelsPanel>();
+    case PanelId::PATHS: return std::make_unique<PathsPanel>();
     }
     return nullptr;
 }
@@ -74,13 +82,17 @@ void DarkHouseShell::draw(DarkHouseApp& app, const FrameContext& frame, GuiEngin
     pollImportScan(app);
     library_.update(app);
     ShellRequests requests;
-    PanelContext ctx{app, frame, gui, library_, requests};
+    PanelContext ctx{app, frame, gui, library_, requests, masking_, canvas_};
 
     handleShortcuts(ctx);
     // The toolbar shrinks the main viewport's work area, so it comes before the dockspace.
     drawToolbar(ctx);
     layout_.submit(frame.mode);
+    masking_.panelVisible = false;
     drawPanels(ctx);
+    syncMaskOverlay(ctx);
+    canvas_.pollSmartObjects(app.document(), app.canvasWidth(), app.canvasHeight());
+    canvas_.syncView(ctx);
     if (requests.openImportDialog) openImportDialog_ = true;
     if (requests.toggleSearchPanel) {
         bool* open = layout_.panelOpen(frame.mode, PanelId::SEARCH);
@@ -104,6 +116,7 @@ void DarkHouseShell::handleShortcuts(PanelContext& ctx) {
     }
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_I, kGlobal)) openImportDialog_ = true;
     if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, kGlobal)) ctx.gui.requestClose();
+    canvasToolShortcuts(ctx);
 }
 
 // -----------------------------------------------------------------------------
@@ -146,7 +159,7 @@ void DarkHouseShell::drawMenus(PanelContext& ctx) {
         const AppMode active = ctx.frame.mode;
         ImGui::SeparatorText("Workspace");
         for (AppMode mode : kModes) {
-            if (ImGui::MenuItem(workspaceTitle(mode), shortcutLabel(workspaceDigit(mode)).c_str(), active == mode)) {
+            if (ImGui::MenuItem(workspaceShortTitle(mode), shortcutLabel(workspaceDigit(mode)).c_str(), active == mode)) {
                 requestMode(ctx, mode);
             }
         }
@@ -156,7 +169,7 @@ void DarkHouseShell::drawMenus(PanelContext& ctx) {
             ImGui::SetItemTooltip("%s", panelInfo(id).description);
         }
         ImGui::Separator();
-        const std::string reset = std::string("Reset ") + workspaceTitle(active) + " Layout";
+        const std::string reset = std::string("Reset ") + workspaceShortTitle(active) + " Layout";
         if (ImGui::MenuItem(reset.c_str())) layout_.resetLayout(active);
         bool vsync = ctx.gui.vsync();
         if (ImGui::MenuItem("Vertical Sync", nullptr, &vsync)) ctx.gui.setVsync(vsync);
@@ -176,19 +189,36 @@ void DarkHouseShell::drawMenus(PanelContext& ctx) {
 }
 
 void DarkHouseShell::drawWorkspaceSwitcher(PanelContext& ctx) {
-    const float segment = 76.0f * theme::scale();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float minSegment = 76.0f * theme::scale();
+    const auto switcherWidth = [&](const char* (*title)(AppMode)) {
+        float width = 0.0f;
+        for (AppMode mode : kModes) {
+            width += std::max(minSegment, ImGui::CalcTextSize(title(mode)).x + style.FramePadding.x * 2.0f);
+        }
+        return width;
+    };
+    // Full titles when they fit between the menus and the toggles, short ones otherwise.
+    const char* (*title)(AppMode) = workspaceTitle;
+    float width = switcherWidth(title);
+    const float reserved = 3.0f * iconButtonWidth() + style.ItemSpacing.x * 4.0f;
+    if (ImGui::GetCursorPosX() + width + reserved > ImGui::GetWindowWidth()) {
+        title = workspaceShortTitle;
+        width = switcherWidth(title);
+    }
     // Centred in the bar, unless the menus already reach past the centre.
-    const float centred = (ImGui::GetWindowWidth() - segment * static_cast<float>(kModes.size())) * 0.5f;
+    const float centred = (ImGui::GetWindowWidth() - width) * 0.5f;
     if (centred > ImGui::GetCursorPosX()) ImGui::SetCursorPosX(centred);
 
-    int active = static_cast<int>(index(ctx.frame.mode));
-    if (segmented("##Workspace", active,
-                  {workspaceTitle(kModes[0]), workspaceTitle(kModes[1]), workspaceTitle(kModes[2])}, segment,
-                  /*prominent=*/true)) {
+    int active = static_cast<int>(std::find(kModes.begin(), kModes.end(), ctx.frame.mode) - kModes.begin());
+    if (segmented("##Workspace", active, {title(kModes[0]), title(kModes[1]), title(kModes[2]), title(kModes[3])},
+                  minSegment, /*prominent=*/true)) {
         requestMode(ctx, kModes[static_cast<std::size_t>(active)]);
     }
-    ImGui::SetItemTooltip("Catalog: browse, rate, filter and import\nCanvas: develop, composite and design\n"
-                          "Split: library grid and canvas side by side\n%s / 2 / 3",
+    ImGui::SetItemTooltip("Catalog: browse, rate, filter and import\n"
+                          "Develop: white balance, tone, colour, detail and local masks\n"
+                          "Canvas: layers, blend modes, masks, tools and paths\n"
+                          "Split: library grid and the develop view side by side\n%s / 2 / 3 / 4",
                           shortcutLabel("1").c_str());
 }
 
@@ -257,21 +287,26 @@ void DarkHouseShell::drawActivityAndToggles(PanelContext& ctx) {
         ImGui::SetItemTooltip("Imports that could not be read; see the log for each file");
     }
 
-    const auto toggle = [&](const char* id, Icon icon, const char* tooltip, std::initializer_list<PanelId> panels) {
-        bool available = true;
+    // Each toggle shows or hides the panels its side holds in this workspace's layout.
+    const auto toggle = [&](const char* id, Icon icon, const char* tooltip, std::initializer_list<PanelId> side) {
+        bool available = false;
         bool anyOpen = false;
-        for (PanelId panel : panels) {
-            available = available && WorkspaceLayoutManager::inDefaultLayout(mode, panel);
+        for (PanelId panel : side) {
+            if (!WorkspaceLayoutManager::inDefaultLayout(mode, panel)) continue;
+            available = true;
             anyOpen = anyOpen || *layout_.panelOpen(mode, panel);
         }
         if (iconButton(id, icon, tooltip, available && anyOpen, available)) {
-            for (PanelId panel : panels) *layout_.panelOpen(mode, panel) = !anyOpen;
+            for (PanelId panel : side) {
+                if (WorkspaceLayoutManager::inDefaultLayout(mode, panel)) *layout_.panelOpen(mode, panel) = !anyOpen;
+            }
         }
     };
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f * s, style.ItemSpacing.y));
-    toggle("##LeftPanels", Icon::SIDEBAR_LEFT, "Collections and Metadata", {PanelId::COLLECTIONS, PanelId::METADATA});
+    toggle("##LeftPanels", Icon::SIDEBAR_LEFT, "Left panels", {PanelId::COLLECTIONS, PanelId::METADATA, PanelId::TOOLS});
     toggle("##BottomPanels", Icon::PANEL_BOTTOM, "Filmstrip", {PanelId::FILMSTRIP});
-    toggle("##RightPanels", Icon::SIDEBAR_RIGHT, "Layers and Adjustments", {PanelId::LAYERS, PanelId::ADJUSTMENTS});
+    toggle("##RightPanels", Icon::SIDEBAR_RIGHT, "Right panels",
+           {PanelId::ADJUSTMENTS, PanelId::MASKING, PanelId::PROPERTIES, PanelId::LAYERS, PanelId::CHANNELS, PanelId::PATHS});
     ImGui::PopStyleVar();
 }
 
@@ -298,12 +333,17 @@ void DarkHouseShell::drawPanels(PanelContext& ctx) {
         }
         if (panel.canvasBackground()) ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kCanvas);
         if (panel.fullBleed()) ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-        const bool visible = ImGui::Begin(layout_.windowName(mode, id), open, panel.windowFlags());
+        // Panels reappear on every workspace switch; taking focus then would
+        // pull each dock's last-drawn tab to the front (ImGui selects the
+        // focused window's tab).
+        const bool visible =
+            ImGui::Begin(layout_.windowName(mode, id), open, panel.windowFlags() | ImGuiWindowFlags_NoFocusOnAppearing);
         if (panel.fullBleed()) ImGui::PopStyleVar();
         if (visible) panel.draw(ctx);
         ImGui::End();
         if (panel.canvasBackground()) ImGui::PopStyleColor();
     }
+    layout_.updateTabs(mode);
 }
 
 // -----------------------------------------------------------------------------

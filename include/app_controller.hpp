@@ -42,8 +42,9 @@ namespace darkhouse {
 
 enum class AppMode : std::uint8_t {
     CATALOG,       // library grid: browse, rate, filter, import
-    CANVAS,        // single-document editor: develop, composite, vector
-    HYBRID_SPLIT,  // filmstrip + canvas side by side
+    DEVELOP,       // parametric photo development: tone, colour, detail, lens, local masks
+    CANVAS,        // compositing: layer stack, blend modes, painting, channels, paths, transforms
+    HYBRID_SPLIT,  // library grid and develop view side by side
 };
 
 [[nodiscard]] std::string_view toString(AppMode mode) noexcept;
@@ -54,6 +55,7 @@ struct AppConfig {
     std::filesystem::path catalogPath = "darkhouse_catalog.sqlite";
     std::filesystem::path shaderDirectory = "shaders";  // compiled *.spv
     std::filesystem::path modelDirectory;               // subject_segmentation.onnx / sky_segmentation.onnx
+    std::filesystem::path lensDatabaseDirectory;        // lensfun XML files; empty = search (lens_database.hpp)
     AppMode initialMode = AppMode::CATALOG;
     std::uint32_t canvasWidth = 2048;  // the empty document before a photo is opened
     std::uint32_t canvasHeight = 2048;
@@ -90,7 +92,7 @@ struct SetColorLabelEvent {
     ColorLabel label = ColorLabel::NONE;
 };
 struct OpenAssetEvent {
-    std::string assetId;  // loads its develop stack and photo; leaves CATALOG for CANVAS
+    std::string assetId;  // loads its develop stack and photo; leaves CATALOG for DEVELOP
 };
 // Replaces the parameters of one develop-stack node (same bytes as
 // edit_nodes.serialized_params) and re-renders the canvas. With `persist`,
@@ -100,6 +102,7 @@ struct SetDevelopParamsEvent {
     std::uint32_t nodeIndex = 0;
     std::vector<std::byte> serializedParams;
     bool persist = false;
+    std::string nodeType;  // when set, the event is dropped unless the node at nodeIndex is of this type
 };
 // Replaces the whole develop stack, e.g. to add or remove a node, rebuilds
 // the develop graph and re-renders. Nodes are renumbered in order. With
@@ -109,8 +112,19 @@ struct SetDevelopStackEvent {
     std::vector<EditNodeRecord> stack;
     bool persist = true;
 };
+// Shows one mask of the local_adjust node as a red overlay on the canvas
+// (-1 hides it). A viewing aid for the masking tools; not saved.
+struct SetMaskOverlayEvent {
+    int maskIndex = -1;
+};
+// Shows one channel of the canvas as grey (Canvas > Channels); COLOR is
+// the normal view. A viewing aid; not saved.
+struct SetDisplayChannelEvent {
+    DisplayChannel channel = DisplayChannel::COLOR;
+};
 using AppEvent = std::variant<QuitEvent, SwitchModeEvent, ImportFilesEvent, SetRatingEvent, SetFlagEvent,
-                              SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent, SetDevelopStackEvent>;
+                              SetColorLabelEvent, OpenAssetEvent, SetDevelopParamsEvent, SetDevelopStackEvent,
+                              SetMaskOverlayEvent, SetDisplayChannelEvent>;
 
 struct FrameContext {
     std::uint64_t frameIndex = 0;
@@ -228,6 +242,12 @@ public:
     [[nodiscard]] const std::vector<RenderPipelineGraph::NodeTiming>& developTimings() const noexcept {
         return developTimings_;
     }
+    // A develop evaluation is running on the GPU, or an edit is waiting for
+    // the next one (the canvas is visible). Front-ends keep drawing meanwhile.
+    [[nodiscard]] bool developBusy() const noexcept;
+    // Develop evaluations submitted so far. Edits made while one runs are
+    // coalesced into the next, so this grows by at most one per frame.
+    [[nodiscard]] std::uint64_t developEvaluations() const noexcept { return developEvaluations_; }
     // Increments whenever the catalog may have changed (import finished,
     // rating, flag or label written), so views know when to re-query.
     [[nodiscard]] std::uint64_t catalogRevision() const noexcept { return catalogRevision_; }
@@ -260,6 +280,10 @@ private:
     void handle(const OpenAssetEvent& event);
     void handle(const SetDevelopParamsEvent& event);
     void handle(const SetDevelopStackEvent& event);
+    void handle(const SetMaskOverlayEvent& event);
+    void handle(const SetDisplayChannelEvent& event);
+    void applyMaskOverlay();
+    void applyDisplayChannel();
     void pollImports();
     void startPhotoLoad(const AssetRecord& asset);
     void pollPhotoLoad();
@@ -283,6 +307,10 @@ private:
     GPUTexture canvasTexture_;
     std::unique_ptr<RenderPipelineGraph> developGraph_;
     std::vector<RenderPipelineGraph::NodeTiming> developTimings_;
+    VulkanContext::Submission developSubmission_;  // the develop evaluation in flight, if any
+    std::uint64_t developEvaluations_ = 0;
+    int maskOverlay_ = -1;                          // mask shown as an overlay (SetMaskOverlayEvent)
+    DisplayChannel displayChannel_ = DisplayChannel::COLOR;  // SetDisplayChannelEvent
     bool graphDirty_ = true;
     std::uint64_t canvasGeneration_ = 0;
     bool frontEndAttached_ = false;

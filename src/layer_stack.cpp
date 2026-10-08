@@ -1,7 +1,10 @@
 #include "layer_stack.hpp"
 
+#include "adjustment_ops.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -65,20 +68,272 @@ bool lessRowMajor(const TileKey& a, const TileKey& b) noexcept {
     return a.ty != b.ty ? a.ty < b.ty : a.tx < b.tx;
 }
 
-// Source-over with a separable blend mode (W3C Compositing Level 1 section 5.2)
-// on straight-alpha RGBA. `sourceAlpha` already includes opacity and mask.
+// Source-over with a blend mode (W3C Compositing Level 1 section 5.2) on
+// straight-alpha RGBA. `sourceAlpha` already includes opacity and mask.
 void blendPixel(float* dst, const float* src, float sourceAlpha, BlendMode mode) noexcept {
     if (!(sourceAlpha > 0.0f)) return;
     const float backdropAlpha = dst[3];
     const float outAlpha = sourceAlpha + backdropAlpha * (1.0f - sourceAlpha);
+    const std::array<float, 3> blended =
+        mode == BlendMode::NORMAL ? std::array<float, 3>{src[0], src[1], src[2]}
+                                  : blendColor(mode, {dst[0], dst[1], dst[2]}, {src[0], src[1], src[2]});
     for (int c = 0; c < 3; ++c) {
         const float cb = dst[c];
         const float cs = src[c];
-        const float mixed = (1.0f - backdropAlpha) * cs + backdropAlpha * blendChannel(mode, cb, cs);
+        const float mixed = (1.0f - backdropAlpha) * cs + backdropAlpha * blended[static_cast<std::size_t>(c)];
         const float premultiplied = sourceAlpha * mixed + backdropAlpha * cb * (1.0f - sourceAlpha);
         dst[c] = outAlpha > 0.0f ? premultiplied / outAlpha : 0.0f;
     }
     dst[3] = outAlpha;
+}
+
+// --- Transformed content ---------------------------------------------------------------
+
+// The canvas rectangle {x0, y0, x1, y1} covered by layer rectangle `r` under `m`.
+std::array<float, 4> mappedBounds(const Affine& m, const std::array<float, 4>& r) noexcept {
+    std::array<float, 4> out{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                             std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+    for (const auto& [x, y] : {std::pair{r[0], r[1]}, std::pair{r[2], r[1]}, std::pair{r[0], r[3]}, std::pair{r[2], r[3]}}) {
+        const std::array<float, 2> p = applyAffine(m, x, y);
+        out[0] = std::min(out[0], p[0]);
+        out[1] = std::min(out[1], p[1]);
+        out[2] = std::max(out[2], p[0]);
+        out[3] = std::max(out[3], p[1]);
+    }
+    return out;
+}
+
+bool overlapsTile(const std::array<float, 4>& bounds, TileKey key, std::uint32_t tw, std::uint32_t th) noexcept {
+    const float x0 = static_cast<float>(key.tx * TILE_SIZE), y0 = static_cast<float>(key.ty * TILE_SIZE);
+    return bounds[2] > x0 && bounds[0] < x0 + static_cast<float>(tw) && bounds[3] > y0 && bounds[1] < y0 + static_cast<float>(th);
+}
+
+// One texel of a colour layer (straight alpha), transparent outside it.
+struct TexelReader {
+    const SparseRasterLayer& layer;
+    TileKey cachedKey{~0u, ~0u};
+    const PixelTile* cachedTile = nullptr;
+
+    void read(int x, int y, float* rgba) {
+        if (x < 0 || y < 0 || static_cast<std::uint32_t>(x) >= layer.width() || static_cast<std::uint32_t>(y) >= layer.height()) {
+            rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0.0f;
+            return;
+        }
+        const TileKey key = SparseRasterLayer::tileKeyFor(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y));
+        if (!(key == cachedKey)) {
+            cachedKey = key;
+            cachedTile = layer.getTile(key);
+        }
+        if (!cachedTile) {
+            rgba[0] = rgba[1] = rgba[2] = rgba[3] = layer.defaultValue();
+            return;
+        }
+        const std::uint16_t* texel = cachedTile->data.data() +
+                                     cachedTile->index(static_cast<std::uint32_t>(x) % TILE_SIZE, static_cast<std::uint32_t>(y) % TILE_SIZE);
+        for (std::uint32_t c = 0; c < 4; ++c) {
+            const float v = c < cachedTile->channels ? halfToFloat(texel[c]) : 1.0f;
+            rgba[c] = std::isfinite(v) ? v : 0.0f;
+        }
+    }
+};
+
+// Resamples a colour layer placed with `m` into the tile: bilinear on
+// premultiplied colour, so transparent neighbours do not darken edges.
+// Returns false when the layer does not reach the tile.
+bool sampleTransformed(const SparseRasterLayer& layer, const Affine& m, TileKey key, std::uint32_t tw, std::uint32_t th,
+                       std::vector<float>& out) {
+    const std::optional<Affine> inverse = invertAffine(m);
+    if (!inverse) return false;
+    const std::array<float, 4> bounds =
+        mappedBounds(m, {0.0f, 0.0f, static_cast<float>(layer.width()), static_cast<float>(layer.height())});
+    if (!overlapsTile({bounds[0] - 1.0f, bounds[1] - 1.0f, bounds[2] + 1.0f, bounds[3] + 1.0f}, key, tw, th)) return false;
+    out.assign(std::size_t{tw} * th * 4, 0.0f);
+    TexelReader reader{layer};
+    const float originX = static_cast<float>(key.tx * TILE_SIZE), originY = static_cast<float>(key.ty * TILE_SIZE);
+    for (std::uint32_t y = 0; y < th; ++y) {
+        for (std::uint32_t x = 0; x < tw; ++x) {
+            const std::array<float, 2> l =
+                applyAffine(*inverse, originX + static_cast<float>(x) + 0.5f, originY + static_cast<float>(y) + 0.5f);
+            const float fx = l[0] - 0.5f, fy = l[1] - 0.5f;
+            if (fx < -1.0f || fy < -1.0f || fx > static_cast<float>(layer.width()) || fy > static_cast<float>(layer.height())) continue;
+            const float bx = std::floor(fx), by = std::floor(fy);
+            const float tx = fx - bx, ty = fy - by;
+            const int ix = static_cast<int>(bx), iy = static_cast<int>(by);
+            float sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            const float weights[4] = {(1.0f - tx) * (1.0f - ty), tx * (1.0f - ty), (1.0f - tx) * ty, tx * ty};
+            const int offsets[4][2] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+            for (int i = 0; i < 4; ++i) {
+                float texel[4];
+                reader.read(ix + offsets[i][0], iy + offsets[i][1], texel);
+                const float a = clamp01(texel[3]) * weights[i];
+                sum[0] += texel[0] * a;
+                sum[1] += texel[1] * a;
+                sum[2] += texel[2] * a;
+                sum[3] += a;
+            }
+            float* pixel = &out[(std::size_t{y} * tw + x) * 4];
+            if (sum[3] > 0.0f) {
+                pixel[0] = sum[0] / sum[3];
+                pixel[1] = sum[1] / sum[3];
+                pixel[2] = sum[2] / sum[3];
+                pixel[3] = std::min(sum[3], 1.0f);
+            }
+        }
+    }
+    return true;
+}
+
+// --- Vector shapes -----------------------------------------------------------------------
+
+using Polygon = std::vector<std::array<float, 2>>;
+
+float signedArea(const Polygon& polygon) noexcept {
+    float area = 0.0f;
+    for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+        area += polygon[j][0] * polygon[i][1] - polygon[i][0] * polygon[j][1];
+    }
+    return 0.5f * area;
+}
+
+// Anti-aliased coverage of `polygons` (nonzero winding) over a tile whose
+// top-left canvas pixel is (originX, originY): four sample rows per pixel,
+// exact span coverage along each row.
+void rasterizeCoverage(const std::vector<Polygon>& polygons, float originX, float originY, std::uint32_t tw,
+                       std::uint32_t th, std::vector<float>& coverage) {
+    struct Edge {
+        float x0, y0, x1, y1;
+        int direction;
+    };
+    std::vector<Edge> edges;
+    const float width = static_cast<float>(tw), height = static_cast<float>(th);
+    for (const Polygon& polygon : polygons) {
+        for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+            Edge e{polygon[j][0] - originX, polygon[j][1] - originY, polygon[i][0] - originX, polygon[i][1] - originY, 1};
+            if (e.y0 == e.y1) continue;
+            if (e.y0 > e.y1) {
+                std::swap(e.x0, e.x1);
+                std::swap(e.y0, e.y1);
+                e.direction = -1;
+            }
+            if (e.y1 <= 0.0f || e.y0 >= height || std::min(e.x0, e.x1) >= width) continue;
+            edges.push_back(e);
+        }
+    }
+    coverage.assign(std::size_t{tw} * th, 0.0f);
+    if (edges.empty()) return;
+    constexpr int kRows = 4;
+    std::vector<std::pair<float, int>> crossings;
+    for (std::uint32_t py = 0; py < th; ++py) {
+        for (int sub = 0; sub < kRows; ++sub) {
+            const float y = static_cast<float>(py) + (static_cast<float>(sub) + 0.5f) / kRows;
+            crossings.clear();
+            for (const Edge& e : edges) {
+                if (y < e.y0 || y >= e.y1) continue;
+                crossings.emplace_back(e.x0 + (y - e.y0) * (e.x1 - e.x0) / (e.y1 - e.y0), e.direction);
+            }
+            if (crossings.size() < 2) continue;
+            std::sort(crossings.begin(), crossings.end());
+            float* row = &coverage[std::size_t{py} * tw];
+            int winding = 0;
+            float spanStart = 0.0f;
+            for (const auto& [x, direction] : crossings) {
+                const int before = winding;
+                winding += direction;
+                if (before == 0 && winding != 0) spanStart = x;
+                if (before != 0 && winding == 0) {
+                    const float a = std::max(spanStart, 0.0f), b = std::min(x, width);
+                    if (b <= a) continue;
+                    const auto first = static_cast<std::uint32_t>(a);
+                    const auto last = std::min(static_cast<std::uint32_t>(std::ceil(b)), tw);
+                    for (std::uint32_t px = first; px < last; ++px) {
+                        const float overlap = std::min(b, static_cast<float>(px + 1)) - std::max(a, static_cast<float>(px));
+                        if (overlap > 0.0f) row[px] += overlap / kRows;
+                    }
+                }
+            }
+        }
+    }
+    for (float& c : coverage) c = std::min(c, 1.0f);
+}
+
+// A round-capped, round-joined stroke of the polylines as a union of
+// same-orientation polygons (nonzero winding adds them up).
+std::vector<Polygon> strokePolygons(const std::vector<Polyline>& lines, float halfWidth) {
+    std::vector<Polygon> out;
+    constexpr int kSegments = 16;
+    auto orient = [&](Polygon polygon) {
+        if (signedArea(polygon) < 0.0f) std::reverse(polygon.begin(), polygon.end());
+        out.push_back(std::move(polygon));
+    };
+    for (const Polyline& line : lines) {
+        const std::size_t n = line.points.size();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto& p = line.points[i];
+            Polygon disc;
+            for (int k = 0; k < kSegments; ++k) {
+                const float angle = static_cast<float>(k) / kSegments * 6.2831853f;
+                disc.push_back({p[0] + halfWidth * std::cos(angle), p[1] + halfWidth * std::sin(angle)});
+            }
+            orient(std::move(disc));
+            if (i + 1 == n && !line.closed) break;
+            const auto& q = line.points[(i + 1) % n];
+            const float dx = q[0] - p[0], dy = q[1] - p[1];
+            const float length = std::hypot(dx, dy);
+            if (length < 1e-6f) continue;
+            const float nx = -dy / length * halfWidth, ny = dx / length * halfWidth;
+            orient({{p[0] + nx, p[1] + ny}, {q[0] + nx, q[1] + ny}, {q[0] - nx, q[1] - ny}, {p[0] - nx, p[1] - ny}});
+        }
+    }
+    return out;
+}
+
+// Fills and strokes a vector shape placed with `m` into the tile. Returns
+// false when it covers none of the tile.
+bool rasterizeVector(const VectorContent& shape, const Affine& m, TileKey key, std::uint32_t tw, std::uint32_t th,
+                     std::vector<float>& out) {
+    const bool fill = shape.fillColor[3] > 0.0f;
+    const float scale = std::sqrt(std::fabs(m[0] * m[3] - m[1] * m[2]));
+    const float halfStroke = 0.5f * shape.strokeWidth * scale;
+    const bool stroke = shape.strokeColor[3] > 0.0f && halfStroke > 0.0f;
+    if (!fill && !stroke) return false;
+    const std::vector<Polyline> lines = flattenPath(shape, m);
+    std::array<float, 4> bounds{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                                std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+    for (const Polyline& line : lines) {
+        for (const auto& p : line.points) {
+            bounds = {std::min(bounds[0], p[0]), std::min(bounds[1], p[1]), std::max(bounds[2], p[0]), std::max(bounds[3], p[1])};
+        }
+    }
+    const float grow = stroke ? halfStroke + 1.0f : 1.0f;
+    if (!overlapsTile({bounds[0] - grow, bounds[1] - grow, bounds[2] + grow, bounds[3] + grow}, key, tw, th)) return false;
+
+    const float originX = static_cast<float>(key.tx * TILE_SIZE), originY = static_cast<float>(key.ty * TILE_SIZE);
+    std::vector<float> fillCoverage, strokeCoverage;
+    if (fill) {
+        std::vector<Polygon> polygons;
+        for (const Polyline& line : lines) {
+            if (line.points.size() >= 3) polygons.push_back(line.points);  // filling closes every subpath
+        }
+        rasterizeCoverage(polygons, originX, originY, tw, th, fillCoverage);
+    }
+    if (stroke) rasterizeCoverage(strokePolygons(lines, halfStroke), originX, originY, tw, th, strokeCoverage);
+
+    out.assign(std::size_t{tw} * th * 4, 0.0f);
+    bool any = false;
+    for (std::size_t i = 0; i < std::size_t{tw} * th; ++i) {
+        float* pixel = &out[i * 4];
+        if (fill && fillCoverage[i] > 0.0f) {
+            pixel[0] = shape.fillColor[0];
+            pixel[1] = shape.fillColor[1];
+            pixel[2] = shape.fillColor[2];
+            pixel[3] = clamp01(shape.fillColor[3]) * fillCoverage[i];
+        }
+        if (stroke && strokeCoverage[i] > 0.0f) {
+            blendPixel(pixel, shape.strokeColor.data(), clamp01(shape.strokeColor[3]) * strokeCoverage[i], BlendMode::NORMAL);
+        }
+        any = any || pixel[3] > 0.0f;
+    }
+    return any;
 }
 
 // Reads `layer`'s tile `key` into a tw x th RGBA float buffer. Returns false if
@@ -114,18 +369,52 @@ float sampleMask(const SparseRasterLayer& mask, const PixelTile* tile, std::uint
     return clamp01(halfToFloat(tile->data[tile->index(x, y)]));
 }
 
+// An adjustment layer: its operator applied to what lies below it in the
+// group (`dst`), mixed in by blend mode, opacity and mask. Alpha is kept.
+void applyAdjustmentLayer(const LayerNode& node, const AdjustmentContent& content, TileKey key, std::uint32_t tw,
+                          std::uint32_t th, std::vector<float>& dst) {
+    const std::optional<PointAdjustment> op = PointAdjustment::create(content.nodeType, content.serializedParams);
+    if (!op || op->identity()) return;
+    const SparseRasterLayer* mask = node.maskEnabled() ? node.mask() : nullptr;
+    const PixelTile* maskTile = mask ? mask->getTile(key) : nullptr;
+    for (std::uint32_t y = 0; y < th; ++y) {
+        for (std::uint32_t x = 0; x < tw; ++x) {
+            float* pixel = &dst[(std::size_t{y} * tw + x) * 4];
+            if (!(pixel[3] > 0.0f)) continue;
+            float amount = node.opacity();
+            if (mask) amount *= sampleMask(*mask, maskTile, x, y);
+            if (!(amount > 0.0f)) continue;
+            const Rgb adjusted = op->apply({pixel[0], pixel[1], pixel[2]});
+            const std::array<float, 3> blended =
+                node.blendMode() == BlendMode::NORMAL ? adjusted : blendColor(node.blendMode(), {pixel[0], pixel[1], pixel[2]}, adjusted);
+            for (int c = 0; c < 3; ++c) pixel[c] += (blended[static_cast<std::size_t>(c)] - pixel[c]) * amount;
+        }
+    }
+}
+
 void compositeInto(const LayerNode& node, TileKey key, std::uint32_t tw, std::uint32_t th, std::vector<float>& dst) {
     if (!node.visible() || node.opacity() <= 0.0f) return;
+    if (const AdjustmentContent* adjustment = node.adjustment()) {
+        applyAdjustmentLayer(node, *adjustment, key, tw, th, dst);
+        return;
+    }
 
     std::vector<float> source;
+    const bool moved = !node.transform().isIdentity();
     if (node.isGroup()) {
         // Isolated group: children are composited onto transparency first.
         source.assign(dst.size(), 0.0f);
         for (std::size_t i = 0; i < node.childCount(); ++i) compositeInto(node.child(i), key, tw, th, source);
     } else if (const SparseRasterLayer* raster = node.raster()) {
-        if (!sampleRasterTile(*raster, key, tw, th, source)) return;
+        const bool drawn = moved ? sampleTransformed(*raster, node.transform().matrix(), key, tw, th, source)
+                                 : sampleRasterTile(*raster, key, tw, th, source);
+        if (!drawn) return;
+    } else if (const VectorContent* shape = node.vectorShape()) {
+        if (!rasterizeVector(*shape, node.transform().matrix(), key, tw, th, source)) return;
+    } else if (const SmartObjectContent* object = node.smartObject()) {
+        if (!object->pixels || !sampleTransformed(*object->pixels, node.transform().matrix(), key, tw, th, source)) return;
     } else {
-        return;  // GPU-only content
+        return;
     }
 
     const SparseRasterLayer* mask = node.maskEnabled() ? node.mask() : nullptr;
@@ -141,19 +430,28 @@ void compositeInto(const LayerNode& node, TileKey key, std::uint32_t tw, std::ui
 }
 
 // The raster layer `root` composites to unchanged, if there is one (see
-// compositeTileHalf): every other child is hidden, fully transparent or
-// GPU-only content that the CPU compositor skips anyway.
+// compositeTileHalf): every other child is hidden, fully transparent, an
+// identity adjustment or a smart object that has not loaded.
 const SparseRasterLayer* passThroughRaster(const LayerNode& root, std::uint32_t width, std::uint32_t height) {
     if (!root.isGroup() || !root.visible() || root.opacity() < 1.0f || root.maskEnabled()) return nullptr;
     const SparseRasterLayer* only = nullptr;
     for (std::size_t i = 0; i < root.childCount(); ++i) {
         const LayerNode& child = root.child(i);
         if (!child.visible() || child.opacity() <= 0.0f) continue;
-        if (child.isGroup()) return nullptr;
+        if (child.isGroup() || child.vectorShape()) return nullptr;
+        if (const AdjustmentContent* adjustment = child.adjustment()) {
+            const std::optional<PointAdjustment> op = PointAdjustment::create(adjustment->nodeType, adjustment->serializedParams);
+            if (op && !op->identity()) return nullptr;
+            continue;
+        }
+        if (const SmartObjectContent* object = child.smartObject()) {
+            if (object->pixels) return nullptr;
+            continue;
+        }
         const SparseRasterLayer* raster = child.raster();
         if (!raster) continue;
         if (only || child.opacity() < 1.0f || child.maskEnabled() || raster->channels() != 4 ||
-            raster->width() != width || raster->height() != height) {
+            raster->width() != width || raster->height() != height || !child.transform().isIdentity()) {
             return nullptr;
         }
         only = raster;
@@ -371,12 +669,87 @@ std::unique_ptr<LayerNode> LayerNode::createSmartObject(std::string name, SmartO
     return std::unique_ptr<LayerNode>(new LayerNode(std::move(name), LayerType::SMART_OBJECT, std::move(object)));
 }
 
-void LayerNode::setOpacity(float opacity) noexcept { opacity_ = std::isfinite(opacity) ? clamp01(opacity) : 1.0f; }
+void LayerNode::setOpacity(float opacity) noexcept {
+    opacity_ = std::isfinite(opacity) ? clamp01(opacity) : 1.0f;
+    markCompositeDirty();
+}
+
+void LayerNode::setVisible(bool visible) noexcept {
+    visible_ = visible;
+    markCompositeDirty();
+}
+
+void LayerNode::setBlendMode(BlendMode mode) noexcept {
+    blendMode_ = mode;
+    markCompositeDirty();
+}
+
+void LayerNode::setMaskEnabled(bool enabled) noexcept {
+    maskEnabled_ = enabled;
+    markCompositeDirty();
+}
+
+void LayerNode::removeMask() noexcept {
+    mask_.reset();
+    LayerNode* root = this;
+    while (root->parent_) root = root->parent_;
+    if (root->maskPreview_ == this) root->maskPreview_ = nullptr;
+    markCompositeDirty();
+}
+
+void LayerNode::setTransform(const LayerTransform& transform) noexcept {
+    for (float v : {transform.translateX, transform.translateY, transform.scaleX, transform.scaleY, transform.rotation,
+                    transform.pivotX, transform.pivotY}) {
+        if (!std::isfinite(v)) return;
+    }
+    if (std::fabs(transform.scaleX) < 1e-4f || std::fabs(transform.scaleY) < 1e-4f) return;  // would be singular
+    transform_ = transform;
+    markCompositeDirty();
+}
+
+std::optional<std::array<float, 4>> LayerNode::contentBounds() const {
+    if (const SparseRasterLayer* raster = this->raster()) {
+        return std::array<float, 4>{0.0f, 0.0f, static_cast<float>(raster->width()), static_cast<float>(raster->height())};
+    }
+    if (const SmartObjectContent* object = smartObject(); object && object->pixels) {
+        return std::array<float, 4>{0.0f, 0.0f, static_cast<float>(object->pixels->width()),
+                                    static_cast<float>(object->pixels->height())};
+    }
+    if (const VectorContent* shape = vectorShape(); shape && shape->points.size() >= 2) {
+        std::array<float, 4> bounds{shape->points[0], shape->points[1], shape->points[0], shape->points[1]};
+        for (std::size_t i = 0; i + 1 < shape->points.size(); i += 2) {
+            bounds = {std::min(bounds[0], shape->points[i]), std::min(bounds[1], shape->points[i + 1]),
+                      std::max(bounds[2], shape->points[i]), std::max(bounds[3], shape->points[i + 1])};
+        }
+        const float half = shape->strokeColor[3] > 0.0f ? shape->strokeWidth * 0.5f : 0.0f;
+        return std::array<float, 4>{bounds[0] - half, bounds[1] - half, bounds[2] + half, bounds[3] + half};
+    }
+    return std::nullopt;
+}
+
+void LayerNode::markCompositeDirty() noexcept {
+    LayerNode* root = this;
+    while (root->parent_) root = root->parent_;
+    root->compositeDirty_ = true;
+}
+
+void LayerNode::setMaskPreview(const LayerNode* layer) noexcept {
+    if (maskPreview_ == layer) return;
+    maskPreview_ = layer;
+    markCompositeDirty();
+}
+
+bool LayerNode::takeCompositeDirty() noexcept {
+    const bool dirty = compositeDirty_;
+    compositeDirty_ = false;
+    return dirty;
+}
 
 SparseRasterLayer& LayerNode::addMask(std::uint32_t width, std::uint32_t height) {
     mask_ = std::make_unique<SparseRasterLayer>(width, height, 1, 1.0f);
     maskEnabled_ = true;
     mask_->markDirtyRegion(0, 0, width, height);  // the GPU copy must switch to "reveal all"
+    markCompositeDirty();
     return *mask_;
 }
 
@@ -394,6 +767,7 @@ LayerNode& LayerNode::insertChild(std::size_t index, std::unique_ptr<LayerNode>&
     if (index > children_.size()) throw std::out_of_range("LayerNode::insertChild: index out of range");
     child->parent_ = this;
     auto it = children_.insert(children_.begin() + static_cast<std::ptrdiff_t>(index), std::move(child));
+    markCompositeDirty();
     return **it;
 }
 
@@ -404,6 +778,12 @@ std::unique_ptr<LayerNode> LayerNode::removeChild(const LayerNode& child) {
     std::unique_ptr<LayerNode> removed = std::move(*it);
     children_.erase(it);
     removed->parent_ = nullptr;
+    LayerNode* root = this;
+    while (root->parent_) root = root->parent_;
+    if (root->maskPreview_ && (root->maskPreview_ == removed.get() || removed->isAncestorOf(*root->maskPreview_))) {
+        root->maskPreview_ = nullptr;  // the previewed mask leaves the document
+    }
+    markCompositeDirty();
     return removed;
 }
 
@@ -415,6 +795,7 @@ void LayerNode::moveChild(std::size_t from, std::size_t to) {
     auto node = std::move(children_[from]);
     children_.erase(children_.begin() + static_cast<std::ptrdiff_t>(from));
     children_.insert(children_.begin() + static_cast<std::ptrdiff_t>(to), std::move(node));
+    markCompositeDirty();
 }
 
 LayerNode& LayerNode::child(std::size_t index) {
@@ -449,32 +830,227 @@ std::vector<TileKey> takeDirtyTiles(LayerNode& root) {
     return keys;
 }
 
+std::vector<TileKey> takeDirtyTiles(LayerNode& root, std::uint32_t canvasWidth, std::uint32_t canvasHeight) {
+    const std::uint32_t tilesX = (canvasWidth + TILE_SIZE - 1) / TILE_SIZE;
+    const std::uint32_t tilesY = (canvasHeight + TILE_SIZE - 1) / TILE_SIZE;
+    std::vector<TileKey> keys;
+    if (root.takeCompositeDirty()) {
+        (void)takeDirtyTiles(root);  // everything is redone: drop the per-layer lists
+        for (std::uint32_t ty = 0; ty < tilesY; ++ty) {
+            for (std::uint32_t tx = 0; tx < tilesX; ++tx) keys.push_back({tx, ty});
+        }
+        return keys;
+    }
+    std::unordered_set<TileKey, TileKeyHash> merged;
+    auto add = [&](const TileKey& key) {
+        if (key.tx < tilesX && key.ty < tilesY) merged.insert(key);
+    };
+    root.visit([&](LayerNode& node, std::size_t) {
+        if (SparseRasterLayer* raster = node.raster()) {
+            const std::vector<TileKey> dirty = raster->takeDirtyTiles();
+            if (node.transform().isIdentity()) {
+                for (const TileKey& key : dirty) add(key);
+            } else {
+                // A moved layer's tile lands wherever its transform puts it (plus
+                // a pixel of bilinear reach).
+                const Affine m = node.transform().matrix();
+                for (const TileKey& key : dirty) {
+                    const float x0 = static_cast<float>(key.tx * TILE_SIZE), y0 = static_cast<float>(key.ty * TILE_SIZE);
+                    const std::array<float, 4> b = mappedBounds(m, {x0, y0, x0 + TILE_SIZE, y0 + TILE_SIZE});
+                    const auto first = [](float v) { return static_cast<std::uint32_t>(std::max(0.0f, std::floor((v - 1.0f) / TILE_SIZE))); };
+                    const auto last = [](float v) { return static_cast<std::int64_t>(std::floor((v + 1.0f) / TILE_SIZE)); };
+                    for (std::int64_t ty = first(b[1]); ty <= std::min<std::int64_t>(last(b[3]), tilesY - 1); ++ty) {
+                        for (std::int64_t tx = first(b[0]); tx <= std::min<std::int64_t>(last(b[2]), tilesX - 1); ++tx) {
+                            add({static_cast<std::uint32_t>(tx), static_cast<std::uint32_t>(ty)});
+                        }
+                    }
+                }
+            }
+        }
+        if (SparseRasterLayer* mask = node.mask()) {
+            for (const TileKey& key : mask->takeDirtyTiles()) add(key);
+        }
+    });
+    keys.assign(merged.begin(), merged.end());
+    std::sort(keys.begin(), keys.end(), lessRowMajor);
+    return keys;
+}
+
 // -----------------------------------------------------------------------------
 // Compositing
 // -----------------------------------------------------------------------------
 
 float blendChannel(BlendMode mode, float backdrop, float source) noexcept {
+    const float cb = clamp01(backdrop), cs = clamp01(source);  // for the display-referred modes
     switch (mode) {
-    case BlendMode::NORMAL:
-        return source;
-    case BlendMode::MULTIPLY:
-        return backdrop * source;
-    case BlendMode::SCREEN: {
-        const float cb = clamp01(backdrop), cs = clamp01(source);
-        return cb + cs - cb * cs;
-    }
-    case BlendMode::OVERLAY: {  // HardLight with the layers swapped
-        const float cb = clamp01(backdrop), cs = clamp01(source);
+    case BlendMode::NORMAL: return source;
+    case BlendMode::MULTIPLY: return backdrop * source;
+    case BlendMode::DARKEN: return std::min(backdrop, source);
+    case BlendMode::LIGHTEN: return std::max(backdrop, source);
+    case BlendMode::DIFFERENCE: return std::fabs(backdrop - source);
+    case BlendMode::SCREEN: return cb + cs - cb * cs;
+    case BlendMode::OVERLAY:  // HardLight with the layers swapped
         return cb <= 0.5f ? 2.0f * cb * cs : 1.0f - 2.0f * (1.0f - cb) * (1.0f - cs);
-    }
-    case BlendMode::COLOR_DODGE: {
-        const float cb = clamp01(backdrop), cs = clamp01(source);
+    case BlendMode::COLOR_DODGE:
         if (cb <= 0.0f) return 0.0f;
         if (cs >= 1.0f) return 1.0f;
         return std::min(1.0f, cb / (1.0f - cs));
+    case BlendMode::COLOR_BURN:
+        if (cb >= 1.0f) return 1.0f;
+        if (cs <= 0.0f) return 0.0f;
+        return 1.0f - std::min(1.0f, (1.0f - cb) / cs);
+    case BlendMode::HARD_LIGHT:
+        if (cs <= 0.5f) return cb * 2.0f * cs;
+        return cb + (2.0f * cs - 1.0f) - cb * (2.0f * cs - 1.0f);
+    case BlendMode::SOFT_LIGHT: {
+        if (cs <= 0.5f) return cb - (1.0f - 2.0f * cs) * cb * (1.0f - cb);
+        const float d = cb <= 0.25f ? ((16.0f * cb - 12.0f) * cb + 4.0f) * cb : std::sqrt(cb);
+        return cb + (2.0f * cs - 1.0f) * (d - cb);
     }
+    case BlendMode::EXCLUSION: return cb + cs - 2.0f * cb * cs;
+    case BlendMode::HUE:
+    case BlendMode::SATURATION:
+    case BlendMode::COLOR:
+    case BlendMode::LUMINOSITY: break;  // non-separable: see blendColor
     }
     return source;
+}
+
+namespace {
+
+using Color = std::array<float, 3>;
+
+float lum(const Color& c) noexcept { return 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]; }
+
+Color clipColor(Color c) noexcept {
+    const float l = lum(c);
+    const float n = std::min({c[0], c[1], c[2]}), x = std::max({c[0], c[1], c[2]});
+    for (float& v : c) {
+        if (n < 0.0f && l - n > 0.0f) v = l + (v - l) * l / (l - n);
+        if (x > 1.0f && x - l > 0.0f) v = l + (v - l) * (1.0f - l) / (x - l);
+    }
+    return c;
+}
+
+Color setLum(Color c, float l) noexcept {
+    const float d = l - lum(c);
+    for (float& v : c) v += d;
+    return clipColor(c);
+}
+
+float sat(const Color& c) noexcept { return std::max({c[0], c[1], c[2]}) - std::min({c[0], c[1], c[2]}); }
+
+Color setSat(Color c, float s) noexcept {
+    std::array<std::size_t, 3> order{0, 1, 2};  // min, mid, max
+    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return c[a] < c[b]; });
+    const float lo = c[order[0]], hi = c[order[2]];
+    Color out{};
+    if (hi > lo) {
+        out[order[1]] = (c[order[1]] - lo) * s / (hi - lo);
+        out[order[2]] = s;
+    }
+    return out;
+}
+
+}  // namespace
+
+std::array<float, 3> blendColor(BlendMode mode, const std::array<float, 3>& backdrop, const std::array<float, 3>& source) noexcept {
+    switch (mode) {
+    case BlendMode::HUE:
+    case BlendMode::SATURATION:
+    case BlendMode::COLOR:
+    case BlendMode::LUMINOSITY: {
+        const Color cb{clamp01(backdrop[0]), clamp01(backdrop[1]), clamp01(backdrop[2])};
+        const Color cs{clamp01(source[0]), clamp01(source[1]), clamp01(source[2])};
+        switch (mode) {
+        case BlendMode::HUE: return setLum(setSat(cs, sat(cb)), lum(cb));
+        case BlendMode::SATURATION: return setLum(setSat(cb, sat(cs)), lum(cb));
+        case BlendMode::COLOR: return setLum(cs, lum(cb));
+        default: return setLum(cb, lum(cs));
+        }
+    }
+    default:
+        return {blendChannel(mode, backdrop[0], source[0]), blendChannel(mode, backdrop[1], source[1]),
+                blendChannel(mode, backdrop[2], source[2])};
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Transforms and paths
+// -----------------------------------------------------------------------------
+
+std::array<float, 2> applyAffine(const Affine& m, float x, float y) noexcept {
+    return {m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]};
+}
+
+std::optional<Affine> invertAffine(const Affine& m) noexcept {
+    const float det = m[0] * m[3] - m[1] * m[2];
+    if (!std::isfinite(det) || std::fabs(det) < 1e-12f) return std::nullopt;
+    const float a = m[3] / det, b = -m[1] / det, c = -m[2] / det, d = m[0] / det;
+    return Affine{a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])};
+}
+
+bool LayerTransform::isIdentity() const noexcept {
+    return translateX == 0.0f && translateY == 0.0f && scaleX == 1.0f && scaleY == 1.0f && rotation == 0.0f;
+}
+
+Affine LayerTransform::matrix() const noexcept {
+    const float radians = rotation * 3.14159265358979f / 180.0f;
+    const float cs = std::cos(radians), sn = std::sin(radians);
+    const float a = cs * scaleX, b = sn * scaleX, c = -sn * scaleY, d = cs * scaleY;
+    return {a, b, c, d, pivotX + translateX - (a * pivotX + c * pivotY), pivotY + translateY - (b * pivotX + d * pivotY)};
+}
+
+std::vector<Polyline> flattenPath(const VectorContent& shape, const Affine& m, float tolerance) {
+    std::vector<Polyline> out;
+    std::size_t point = 0;  // next x, y pair
+    const std::size_t pairs = shape.points.size() / 2;
+    auto has = [&](std::size_t n) { return point + n <= pairs; };
+    auto next = [&]() {  // callers check has() first
+        const std::array<float, 2> p = applyAffine(m, shape.points[point * 2], shape.points[point * 2 + 1]);
+        ++point;
+        return p;
+    };
+    tolerance = std::max(tolerance, 0.01f);
+    for (const PathVerb verb : shape.verbs) {
+        switch (verb) {
+        case PathVerb::MOVE_TO:
+            if (!has(1)) return out;
+            out.push_back({{next()}, false});
+            break;
+        case PathVerb::LINE_TO:
+            if (!has(1)) return out;
+            if (out.empty()) out.push_back({{{0.0f, 0.0f}}, false});
+            out.back().points.push_back(next());
+            break;
+        case PathVerb::CUBIC_TO: {
+            if (!has(3)) return out;
+            if (out.empty()) out.push_back({{{0.0f, 0.0f}}, false});
+            const std::array<float, 2> p0 = out.back().points.back();
+            const std::array<float, 2> p1 = next(), p2 = next(), p3 = next();
+            // Enough segments that the chord error stays under `tolerance`.
+            const float length = std::hypot(p1[0] - p0[0], p1[1] - p0[1]) + std::hypot(p2[0] - p1[0], p2[1] - p1[1]) +
+                                 std::hypot(p3[0] - p2[0], p3[1] - p2[1]);
+            const int segments = std::clamp(static_cast<int>(std::ceil(std::sqrt(length / tolerance) * 0.5f)), 1, 256);
+            for (int i = 1; i <= segments; ++i) {
+                const float t = static_cast<float>(i) / static_cast<float>(segments), u = 1.0f - t;
+                const float w0 = u * u * u, w1 = 3.0f * u * u * t, w2 = 3.0f * u * t * t, w3 = t * t * t;
+                out.back().points.push_back({w0 * p0[0] + w1 * p1[0] + w2 * p2[0] + w3 * p3[0],
+                                             w0 * p0[1] + w1 * p1[1] + w2 * p2[1] + w3 * p3[1]});
+            }
+            break;
+        }
+        case PathVerb::CLOSE:
+            if (!out.empty()) {
+                out.back().closed = true;
+                const auto start = out.back().points.front();
+                out.push_back({{start}, false});  // a following LINE_TO continues from the start
+            }
+            break;
+        }
+    }
+    std::erase_if(out, [](const Polyline& line) { return line.points.size() < 2; });
+    return out;
 }
 
 CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_t canvasWidth,
@@ -487,6 +1063,20 @@ CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_
     out.width = std::min(TILE_SIZE, canvasWidth - key.tx * TILE_SIZE);
     out.height = std::min(TILE_SIZE, canvasHeight - key.ty * TILE_SIZE);
     out.rgba.assign(std::size_t{out.width} * out.height * 4, 0.0f);
+    if (const LayerNode* preview = root.maskPreview(); preview && preview->mask()) {
+        // Mask channel view: the mask as an opaque grey image.
+        const SparseRasterLayer& mask = *preview->mask();
+        const PixelTile* tile = mask.getTile(key);
+        for (std::uint32_t y = 0; y < out.height; ++y) {
+            for (std::uint32_t x = 0; x < out.width; ++x) {
+                const float v = sampleMask(mask, tile, x, y);
+                float* p = &out.rgba[(std::size_t{y} * out.width + x) * 4];
+                p[0] = p[1] = p[2] = v;
+                p[3] = 1.0f;
+            }
+        }
+        return out;
+    }
     compositeInto(root, key, out.width, out.height, out.rgba);
     return out;
 }
@@ -494,7 +1084,8 @@ CompositedTile compositeTileCPU(const LayerNode& root, TileKey key, std::uint32_
 CompositedTileHalf compositeTileHalf(const LayerNode& root, TileKey key, std::uint32_t canvasWidth,
                                      std::uint32_t canvasHeight) {
     CompositedTileHalf out;
-    if (const SparseRasterLayer* raster = passThroughRaster(root, canvasWidth, canvasHeight)) {
+    const SparseRasterLayer* raster = root.maskPreview() ? nullptr : passThroughRaster(root, canvasWidth, canvasHeight);
+    if (raster) {
         if (key.tx >= raster->tilesX() || key.ty >= raster->tilesY()) {
             throw std::out_of_range("compositeTileHalf: tile outside the canvas");
         }

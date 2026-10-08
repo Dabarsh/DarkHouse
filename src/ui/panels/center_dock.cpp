@@ -1,5 +1,8 @@
 // Center dock: library grid, viewport (develop output), filmstrip.
 
+#include "ui/canvas_state.hpp"
+#include "ui/canvas_tools.hpp"
+#include "ui/masking.hpp"
 #include "ui/panels.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -28,7 +31,7 @@ void assetContextMenu(PanelContext& ctx, const AssetRecord& asset) {
         ImGui::TextColored(theme::kTextSecondary, "%s", asset.fileName.c_str());
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Open in Canvas", "Enter")) ctx.app.postEvent(OpenAssetEvent{asset.id});
+    if (ImGui::MenuItem("Open", "Enter")) ctx.app.postEvent(OpenAssetEvent{asset.id});
     if (ImGui::BeginMenu("Rating")) {
         for (int stars = 0; stars <= 5; ++stars) {
             const std::string label = stars == 0 ? std::string("None")
@@ -320,7 +323,7 @@ void ViewportPanel::draw(PanelContext& ctx) {
         ImGui::Dummy(region);
         const char* message = !ctx.app.canvasAvailable()
                                   ? "Canvas rendering is unavailable (GPU develop graph disabled; see the log)."
-                                  : "The canvas renders in the Canvas and Split workspaces.";
+                                  : "The canvas renders in the Develop, Canvas and Split workspaces.";
         const glm::vec2 size = ImGui::CalcTextSize(message);
         drawList->AddText(origin + (region - size) * 0.5f, u32(theme::kTextSecondary), message);
         return;
@@ -346,20 +349,33 @@ void ViewportPanel::draw(PanelContext& ctx) {
     float scale = zoom_ > 0.0f ? zoom_ : fitScale;
     const glm::vec2 viewCenter = origin + region * 0.5f;
 
+    // Develop previews zoom from 2 % to 3200 %; the compositing canvas goes
+    // much further both ways, for pixel work and for large documents.
+    const bool compositing = ctx.frame.mode == AppMode::CANVAS;
+    const float minZoom = compositing ? 0.005f : 0.02f;
+    const float maxZoom = compositing ? 256.0f : 32.0f;
+    if (zoom_ > 0.0f) zoom_ = std::clamp(zoom_, minZoom, maxZoom);  // back from a deeper canvas zoom
     if (hovered && io.MouseWheel != 0.0f) {
         // Zoom around the cursor: the canvas point under it stays put.
-        const float newScale = std::clamp(scale * std::pow(1.15f, io.MouseWheel), 0.02f, 32.0f);
+        const float newScale = std::clamp(scale * std::pow(1.15f, io.MouseWheel), minZoom, maxZoom);
         const glm::vec2 cursor = io.MousePos;
         const glm::vec2 center = viewCenter + pan_;
         const glm::vec2 canvasPoint = (cursor - center) / scale;
         pan_ = cursor - canvasPoint * newScale - viewCenter;
         scale = zoom_ = newScale;
     }
-    if (ImGui::IsItemActive() && (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f) ||
+    // An active masking tool (brush, gradient, eyedropper) takes the left
+    // button; the view then pans with the middle button only.
+    const CanvasView toolView{viewCenter + pan_ - imageSize * scale * 0.5f, scale, imageSize};
+    bool toolUsed = maskingViewportInput(ctx, toolView, hovered, ImGui::IsItemActive());
+    if (compositing && ctx.masking.tool == MaskTool::NONE) {
+        toolUsed = canvasViewportInput(ctx, toolView, hovered, ImGui::IsItemActive()) || toolUsed;
+    }
+    if (ImGui::IsItemActive() && ((!toolUsed && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) ||
                                   ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))) {
         pan_ += glm::vec2(io.MouseDelta);
     }
-    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    if (!toolUsed && hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         zoom_ = zoom_ > 0.0f ? 0.0f : 1.0f;  // fit <-> 100 %
         scale = zoom_ > 0.0f ? zoom_ : fitScale;
         pan_ = glm::vec2(0.0f);
@@ -387,8 +403,25 @@ void ViewportPanel::draw(PanelContext& ctx) {
         }
     }
     drawList->AddImage(texture, imageMin, imageMax);
+    if (compositing && scale >= 8.0f) {
+        // Pixel grid over the visible part of the canvas.
+        const ImU32 gridColor = IM_COL32(0, 0, 0, static_cast<int>(std::min(scale * 4.0f, 70.0f)));
+        const glm::vec2 first = glm::ceil((visibleMin - imageMin) / scale);
+        for (float x = imageMin.x + first.x * scale; x < visibleMax.x; x += scale) {
+            drawList->AddLine(ImVec2(x, visibleMin.y), ImVec2(x, visibleMax.y), gridColor);
+        }
+        for (float y = imageMin.y + first.y * scale; y < visibleMax.y; y += scale) {
+            drawList->AddLine(ImVec2(visibleMin.x, y), ImVec2(visibleMax.x, y), gridColor);
+        }
+    }
     // A hairline around the canvas, so a dark photo still shows where it ends on black.
     drawList->AddRect(imageMin - glm::vec2(1.0f), imageMax + glm::vec2(1.0f), u32(theme::kSeparator));
+    drawMaskingOverlay(ctx, CanvasView{imageMin, scale, imageSize}, hovered);
+    if (compositing) {
+        ctx.canvas.validate(ctx.app.document());
+        if (const LayerNode* layer = ctx.canvas.selectedLayer) drawLayerOutline(*layer, drawList, imageMin, scale);
+        if (ctx.masking.tool == MaskTool::NONE) drawCanvasToolOverlay(ctx, CanvasView{imageMin, scale, imageSize}, hovered);
+    }
     drawList->PopClipRect();
     drawPhotoStatus(ctx, origin, region);
 
@@ -399,7 +432,7 @@ void ViewportPanel::draw(PanelContext& ctx) {
         float percentSlot = 0.0f;
         {
             const SmallText small;
-            percentSlot = ImGui::CalcTextSize("3200%").x + 12.0f * s;  // the widest zoom, so the group never resizes
+            percentSlot = ImGui::CalcTextSize("25600%").x + 12.0f * s;  // the widest zoom, so the group never resizes
         }
         const glm::vec2 pos = origin + glm::vec2(8.0f * s);
         const glm::vec2 size(pad * 2.0f + segment * 2.0f + percentSlot, pad * 2.0f + ImGui::GetFrameHeight());

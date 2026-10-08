@@ -1,0 +1,93 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// DarkHouse — lens corrections (LensCorrectionNode in lens_correction.hpp).
+//
+// Each output pixel samples the input where the lens put it: the corrected
+// position mapped through the manual and profile distortion (green), and
+// through the red / blue transverse chromatic aberration. The samples are
+// bilinear with clamped edges, then the vignetting falloff is divided out.
+// Must match lensSourcePosition / applyLensCorrection in
+// src/lens_correction.cpp.
+
+#include "color_common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly  image2D inputImage;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D outputImage;
+
+// Must match darkhouse::LensCorrectionPush (128 bytes).
+layout(push_constant) uniform LensCorrection {
+    vec4 geometry;    // centre, distortion unit, vignetting unit (pixels)
+    vec4 distortion;  // coefficients, amount
+    vec4 tcaRed;      // v, c, b, manual scale
+    vec4 tcaBlue;
+    vec4 vignetting;  // k1, k2, k3, amount (0 = off)
+    vec4 manual;      // distortion k, vignetting stops, midpoint, output scale
+    vec4 reserved;
+    uvec4 models;     // distortion model, TCA model
+} params;
+
+const uint DISTORTION_PTLENS = 1u, DISTORTION_POLY3 = 2u, DISTORTION_POLY5 = 3u;
+const uint TCA_LINEAR = 1u, TCA_POLY3 = 2u;
+
+float distortionRatio(float r) {
+    vec4 k = params.distortion;
+    if (params.models.x == DISTORTION_PTLENS) return k.x * r * r * r + k.y * r * r + k.z * r + 1.0 - k.x - k.y - k.z;
+    if (params.models.x == DISTORTION_POLY3) return 1.0 - k.x + k.x * r * r;
+    if (params.models.x == DISTORTION_POLY5) return 1.0 + k.x * r * r + k.y * r * r * r * r;
+    return 1.0;
+}
+
+float tcaRatio(vec4 k, float r) {
+    if (params.models.y == TCA_LINEAR) return k.x;
+    if (params.models.y == TCA_POLY3) return k.z * r * r + k.y * r + k.x;
+    return 1.0;
+}
+
+vec4 bilinear(vec2 position) {
+    ivec2 size = imageSize(inputImage);
+    vec2 f = position - 0.5;
+    vec2 base = floor(f);
+    vec2 t = f - base;
+    ivec2 i0 = clamp(ivec2(base), ivec2(0), size - 1);
+    ivec2 i1 = clamp(ivec2(base) + 1, ivec2(0), size - 1);
+    vec4 top = mix(imageLoad(inputImage, i0), imageLoad(inputImage, ivec2(i1.x, i0.y)), t.x);
+    vec4 bottom = mix(imageLoad(inputImage, ivec2(i0.x, i1.y)), imageLoad(inputImage, i1), t.x);
+    return mix(top, bottom, t.y);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(coord, imageSize(outputImage)))) return;
+    vec2 centre = params.geometry.xy;
+    float unit = params.geometry.z;
+    vec2 pixel = vec2(coord) + 0.5;
+
+    vec2 v = (pixel - centre) / unit * params.manual.w;
+    v *= 1.0 + params.manual.x * dot(v, v);
+    if (params.models.x != 0u) v *= 1.0 + (distortionRatio(length(v)) - 1.0) * params.distortion.w;
+    float r = length(v);
+    vec2 green = centre + v * unit;
+    vec2 red = centre + v * (tcaRatio(params.tcaRed, r) * params.tcaRed.w) * unit;
+    vec2 blue = centre + v * (tcaRatio(params.tcaBlue, r) * params.tcaBlue.w) * unit;
+
+    vec4 g = bilinear(green);
+    vec3 rgb = vec3(bilinear(red).r, g.g, bilinear(blue).b);
+
+    float gain = 1.0;
+    if (params.vignetting.w > 0.0) {
+        vec2 d = green - centre;
+        float r2 = dot(d, d) / (params.geometry.w * params.geometry.w);
+        float falloff = 1.0 + params.vignetting.x * r2 + params.vignetting.y * r2 * r2 + params.vignetting.z * r2 * r2 * r2;
+        gain = pow(1.0 / max(falloff, 0.05), params.vignetting.w);
+    }
+    if (params.manual.y != 0.0) {
+        float rc = length(pixel - centre) / length(centre);
+        float start = params.manual.z * 0.9;
+        float t = clamp((rc - start) / (1.0 - start), 0.0, 1.0);
+        t = t * t * (3.0 - 2.0 * t);
+        gain *= exp2(params.manual.y * t);
+    }
+    imageStore(outputImage, coord, vec4(storable(rgb * gain), g.a));
+}

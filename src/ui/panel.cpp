@@ -10,14 +10,21 @@ constexpr std::array<PanelInfo, kPanelCount> kPanels{{
     {PanelId::ASSET_GRID, "Library", "Library", "Thumbnail grid of the current collection"},
     {PanelId::VIEWPORT, "Viewport", "Viewport", "The developed canvas"},
     {PanelId::FILMSTRIP, "Filmstrip", "Filmstrip", "The current collection as a strip, for quick navigation"},
-    {PanelId::LAYERS, "Layers", "Layers", "Unified stack of parametric, raster, vector and smart-object layers"},
-    {PanelId::ADJUSTMENTS, "Adjustments", "Adjustments", "Tone, HSL and colour adjustments of the active layer"},
+    {PanelId::LAYERS, "Layers", "Layers", "Layer stack (pixel, adjustment, vector, smart object, group) with blend mode and opacity"},
+    {PanelId::ADJUSTMENTS, "Adjustments", "Adjustments", "Develop: white balance, tone, colour mixer, colour grading and detail of the photo"},
     {PanelId::ENGINE, "Engine", "Engine", "GPU, swapchain and frame timing diagnostics"},
+    {PanelId::MASKING, "Masking", "Masking", "Masks for local adjustments: brush, gradients, colour and luminance ranges"},
+    {PanelId::PROPERTIES, "Properties", "Properties", "The selected layer: name, layer mask, content and transform"},
+    {PanelId::TOOLS, "Tools", "Tools", "Move, brush, eraser, clone stamp, pen, direct selection and eyedropper, with options"},
+    {PanelId::CHANNELS, "Channels", "Channels", "Show the red, green, blue or alpha channel, or the selected layer's mask"},
+    {PanelId::PATHS, "Paths", "Paths", "Vector paths: draw with the pen, edit points, fill and stroke, turn into a mask"},
 }};
 
+// Menu order: catalog panels, the canvas, develop panels, compositing panels.
 constexpr std::array<PanelId, kPanelCount> kAllPanels{
-    PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA,    PanelId::ASSET_GRID, PanelId::VIEWPORT,
-    PanelId::FILMSTRIP,   PanelId::LAYERS, PanelId::ADJUSTMENTS, PanelId::ENGINE,
+    PanelId::COLLECTIONS, PanelId::SEARCH,  PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT, PanelId::FILMSTRIP,
+    PanelId::ADJUSTMENTS, PanelId::MASKING, PanelId::TOOLS,    PanelId::LAYERS,     PanelId::PROPERTIES,
+    PanelId::CHANNELS,    PanelId::PATHS,   PanelId::ENGINE,
 };
 
 const char* presentModeName(VkPresentModeKHR mode) {
@@ -51,6 +58,8 @@ void EnginePanel::draw(PanelContext& ctx) {
     ImGui::Text("Engine frame: %llu, dt %.2f ms", static_cast<unsigned long long>(ctx.frame.frameIndex),
                 ctx.frame.deltaSeconds * 1000.0);
     ImGui::Text("Canvas: %s", ctx.app.canvasAvailable() ? "GPU develop graph" : "unavailable");
+    ImGui::Text("Develop evaluations: %llu%s", static_cast<unsigned long long>(ctx.app.developEvaluations()),
+                ctx.app.developBusy() ? " (one in flight)" : "");
     if (ctx.app.canvasAvailable()) {
         ImGui::Text("Document: %u x %u", ctx.app.canvasWidth(), ctx.app.canvasHeight());
         const auto& timings = ctx.app.developTimings();

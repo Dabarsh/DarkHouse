@@ -1,10 +1,13 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 // DarkHouse — exposure / tone compute node (ExposureNode in render_pipeline.hpp).
 //
 // Works on scene-referred linear RGBA16F. The order is exposure gain, then
 // highlight/shadow tone shaping, then contrast. Every step is multiplicative
 // or pivots on middle grey, so a grey card at 0.18 keeps its value while
 // contrast changes. Alpha passes through unchanged.
+
+#include "tone_common.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -19,12 +22,6 @@ layout(push_constant) uniform ExposureParams {
     float contrast;              // [-1, 1]; 0 = identity
 } params;
 
-const vec3  LUMA_REC709      = vec3(0.2126, 0.7152, 0.0722);
-const float MIDDLE_GREY      = 0.18;
-const float TONE_RANGE_STOPS = 2.5;    // highlight/shadow masks reach full strength 2.5 EV from grey
-const float MAX_TONE_STOPS   = 2.0;    // highlights/shadows = +/-1 changes gain by up to 2 stops
-const float HALF_MAX         = 65504.0;
-
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size  = imageSize(inputImage);
@@ -33,27 +30,6 @@ void main() {
     }
 
     vec4 source = imageLoad(inputImage, coord);
-    vec3 rgb = max(source.rgb, vec3(0.0));
-
-    // 1. Exposure: plain linear gain.
-    rgb *= exp2(params.exposureCompensation);
-
-    // 2. Highlights / shadows: extra gain in stops, weighted by how far the
-    //    pixel's luminance is above or below middle grey.
-    float luma          = dot(rgb, LUMA_REC709);
-    float stopsFromGrey = log2(max(luma, 1e-6) / MIDDLE_GREY);
-    float highlightMask = smoothstep(0.0, TONE_RANGE_STOPS,  stopsFromGrey);
-    float shadowMask    = smoothstep(0.0, TONE_RANGE_STOPS, -stopsFromGrey);
-    float toneStops     = MAX_TONE_STOPS * (params.highlights * highlightMask + params.shadows * shadowMask);
-    rgb *= exp2(toneStops);
-
-    // 3. Contrast: power curve pivoting on middle grey. It is a slope change in
-    //    log space, so grey stays put and black stays black.
-    float slope = exp2(params.contrast);  // [0.5, 2]
-    rgb = MIDDLE_GREY * pow(max(rgb / MIDDLE_GREY, vec3(1e-8)), vec3(slope));
-
-    // Clamp so an extreme push cannot write +Inf into the half-float target.
-    rgb = min(rgb, vec3(HALF_MAX));
-
+    vec3 rgb = applyTone(source.rgb, params.exposureCompensation, params.highlights, params.shadows, params.contrast);
     imageStore(outputImage, coord, vec4(rgb, source.a));
 }

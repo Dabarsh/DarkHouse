@@ -60,12 +60,14 @@ void printUsage(std::ostream& out) {
            "                          (use \"\" to list everything)\n"
            "  --rate <asset-id> <0-5> set an asset's star rating\n"
            "  --open <asset-id>       open an asset on the canvas: its photo and develop stack\n"
-           "  --mode <catalog|canvas|split>\n"
+           "  --mode <catalog|develop|canvas|split>\n"
            "  --canvas <W>x<H>        empty document size before a photo is opened (default 2048x2048)\n"
            "  --preview-size <px>     longest edge of an opened photo on the canvas; larger files are\n"
            "                          downscaled for interactive editing (default 3072, 0 = full size)\n"
            "  --shaders <dir>         directory containing compiled *.spv shaders\n"
            "  --models <dir>          directory containing *_segmentation.onnx models\n"
+           "  --lens-db <dir>         lensfun lens database (*.xml) for lens profile corrections\n"
+           "                          (default: $DARKHOUSE_LENSFUN_DIR, then /usr/share/lensfun/version_1)\n"
            "  --frames <n>            run exactly n frames, then exit (headless: instead of exiting when idle)\n"
            "  --headless              no window: run the queued work and exit once it drains\n"
            "  --window <W>x<H>        initial window size (default: 85% of the screen)\n"
@@ -195,7 +197,7 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
         } else if (arg == "--mode") {
             const auto v = value();
             const auto mode = v ? parseAppMode(*v) : std::nullopt;
-            if (!mode) return fail("--mode must be catalog, canvas or split");
+            if (!mode) return fail("--mode must be catalog, develop, canvas or split");
             cli.config.initialMode = *mode;
         } else if (arg == "--canvas") {
             const auto v = value();
@@ -219,6 +221,10 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
             const auto v = value();
             if (!v) return fail("--models needs a directory");
             cli.config.modelDirectory = *v;
+        } else if (arg == "--lens-db") {
+            const auto v = value();
+            if (!v) return fail("--lens-db needs a directory");
+            cli.config.lensDatabaseDirectory = *v;
         } else if (arg == "--frames") {
             const auto v = value();
             char* end = nullptr;
