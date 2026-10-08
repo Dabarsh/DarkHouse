@@ -1,10 +1,16 @@
 // Layer stack tests: bulk FP16 conversion (F16C or scalar) against the scalar
 // reference, the pass-through composite against the full compositor, binary16
-// region writes and the parallel loop.
+// region writes, the parallel loop, blend modes, layer transforms, vector
+// shapes, adjustment layers, smart objects, dirty-tile tracking, and brush,
+// eraser, clone and undo on raster layers.
 
+#include "color_adjust.hpp"
 #include "layer_stack.hpp"
 #include "parallel.hpp"
+#include "raster_paint.hpp"
+#include "render_pipeline.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -241,6 +247,312 @@ void testParallelFor() {
     CHECK(rethrown);
 }
 
+bool near(float a, float b, float tolerance) { return std::fabs(a - b) <= tolerance; }
+
+// One pixel of a composited canvas.
+std::array<float, 4> pixelAt(const LayerNode& root, std::uint32_t width, std::uint32_t height, std::uint32_t x,
+                             std::uint32_t y) {
+    const CompositedTile tile = compositeTileCPU(root, SparseRasterLayer::tileKeyFor(x, y), width, height);
+    const float* p = &tile.rgba[(std::size_t{y % TILE_SIZE} * tile.width + x % TILE_SIZE) * 4];
+    return {p[0], p[1], p[2], p[3]};
+}
+
+void fill(SparseRasterLayer& layer, std::array<float, 4> rgba) {
+    std::vector<float> pixels(std::size_t{layer.width()} * layer.height() * 4);
+    for (std::size_t i = 0; i < pixels.size(); i += 4) std::copy(rgba.begin(), rgba.end(), pixels.begin() + static_cast<std::ptrdiff_t>(i));
+    layer.writeRegion(0, 0, layer.width(), layer.height(), pixels);
+}
+
+void testBlendModes() {
+    // Separable modes against the W3C formulas at a few points.
+    CHECK(blendChannel(BlendMode::DARKEN, 0.3f, 0.6f) == 0.3f);
+    CHECK(blendChannel(BlendMode::LIGHTEN, 0.3f, 0.6f) == 0.6f);
+    CHECK(near(blendChannel(BlendMode::DIFFERENCE, 0.3f, 0.6f), 0.3f, 1e-6f));
+    CHECK(near(blendChannel(BlendMode::EXCLUSION, 0.5f, 0.5f), 0.5f, 1e-6f));
+    CHECK(near(blendChannel(BlendMode::COLOR_BURN, 0.5f, 0.5f), 0.0f, 1e-6f));
+    CHECK(near(blendChannel(BlendMode::COLOR_BURN, 1.0f, 0.2f), 1.0f, 1e-6f));
+    CHECK(near(blendChannel(BlendMode::HARD_LIGHT, 0.5f, 0.25f), 0.25f, 1e-6f));   // multiply(0.5, 0.5)
+    CHECK(near(blendChannel(BlendMode::HARD_LIGHT, 0.5f, 0.75f), 0.75f, 1e-6f));   // screen(0.5, 0.5)
+    CHECK(near(blendChannel(BlendMode::SOFT_LIGHT, 0.5f, 0.5f), 0.5f, 1e-6f));     // 50 % grey is neutral
+    CHECK(near(blendChannel(BlendMode::SOFT_LIGHT, 0.64f, 1.0f), 0.8f, 1e-6f));    // sqrt branch
+    CHECK(near(blendChannel(BlendMode::OVERLAY, 0.25f, 0.5f), 0.25f, 1e-6f));
+    CHECK(blendChannel(BlendMode::MULTIPLY, 4.0f, 0.5f) == 2.0f);  // HDR kept
+    // Non-separable modes: the luminosity of one colour with the hue of the other.
+    const std::array<float, 3> grey{0.5f, 0.5f, 0.5f}, red{1.0f, 0.0f, 0.0f};
+    const std::array<float, 3> colour = blendColor(BlendMode::COLOR, grey, red);
+    CHECK(near(0.3f * colour[0] + 0.59f * colour[1] + 0.11f * colour[2], 0.5f, 1e-5f));
+    CHECK(colour[0] > colour[1] && near(colour[1], colour[2], 1e-6f));
+    const std::array<float, 3> lumi = blendColor(BlendMode::LUMINOSITY, red, grey);
+    CHECK(near(0.3f * lumi[0] + 0.59f * lumi[1] + 0.11f * lumi[2], 0.5f, 1e-5f) && lumi[0] > lumi[1]);
+    const std::array<float, 3> desaturated = blendColor(BlendMode::SATURATION, red, grey);  // grey has no saturation
+    CHECK(near(desaturated[0], desaturated[1], 1e-6f) && near(desaturated[1], desaturated[2], 1e-6f));
+    const std::array<float, 3> hue = blendColor(BlendMode::HUE, grey, red);  // no saturation to carry the hue
+    CHECK(near(hue[0], 0.5f, 1e-6f) && near(hue[1], 0.5f, 1e-6f));
+
+    // Through the compositor: a 50 % grey Difference layer over white.
+    const std::uint32_t w = 8, h = 8;
+    auto root = LayerNode::createGroup("Document");
+    fill(*root->addChild(LayerNode::createRaster("White", w, h)).raster(), {1.0f, 1.0f, 1.0f, 1.0f});
+    LayerNode& top = root->addChild(LayerNode::createRaster("Grey", w, h));
+    fill(*top.raster(), {0.25f, 0.5f, 0.75f, 1.0f});
+    top.setBlendMode(BlendMode::DIFFERENCE);
+    const std::array<float, 4> p = pixelAt(*root, w, h, 3, 3);
+    CHECK(near(p[0], 0.75f, 1e-3f) && near(p[1], 0.5f, 1e-3f) && near(p[2], 0.25f, 1e-3f) && p[3] == 1.0f);
+}
+
+void testTransforms() {
+    // Affine helpers.
+    LayerTransform t;
+    CHECK(t.isIdentity());
+    t.translateX = 10.0f;
+    t.translateY = -4.0f;
+    t.rotation = 90.0f;
+    t.scaleX = 2.0f;
+    t.pivotX = 5.0f;
+    t.pivotY = 5.0f;
+    const Affine m = t.matrix();
+    const std::array<float, 2> pivot = applyAffine(m, 5.0f, 5.0f);
+    CHECK(near(pivot[0], 15.0f, 1e-4f) && near(pivot[1], 1.0f, 1e-4f));  // the pivot only moves by the translation
+    const std::array<float, 2> right = applyAffine(m, 6.0f, 5.0f);       // one pixel right, scaled 2x, turned 90 degrees clockwise
+    CHECK(near(right[0], 15.0f, 1e-4f) && near(right[1], 3.0f, 1e-4f));
+    const std::optional<Affine> inverse = invertAffine(m);
+    CHECK(inverse.has_value());
+    const std::array<float, 2> back = applyAffine(*inverse, right[0], right[1]);
+    CHECK(near(back[0], 6.0f, 1e-4f) && near(back[1], 5.0f, 1e-4f));
+    CHECK(!invertAffine({1.0f, 2.0f, 2.0f, 4.0f, 0.0f, 0.0f}));
+
+    // A raster moved by whole pixels lands exactly; the vacated area is empty.
+    const std::uint32_t w = 64, h = 32;
+    auto root = LayerNode::createGroup("Document");
+    LayerNode& layer = root->addChild(LayerNode::createRaster("Dot", w, h));
+    layer.raster()->writePixel(10, 10, std::vector<float>{0.8f, 0.4f, 0.2f, 1.0f});
+    LayerTransform move;
+    move.translateX = 7.0f;
+    move.translateY = 3.0f;
+    layer.setTransform(move);
+    CHECK(near(pixelAt(*root, w, h, 17, 13)[0], 0.8f, 1e-3f) && near(pixelAt(*root, w, h, 17, 13)[3], 1.0f, 1e-6f));
+    CHECK(pixelAt(*root, w, h, 10, 10)[3] == 0.0f);
+    // Half a pixel: the dot spreads over two pixels at half coverage, colour kept (premultiplied sampling).
+    move.translateX = 7.5f;
+    layer.setTransform(move);
+    const std::array<float, 4> half = pixelAt(*root, w, h, 17, 13);
+    CHECK(near(half[3], 0.5f, 1e-3f) && near(half[0], 0.8f, 2e-3f));
+    // Singular or non-finite transforms are refused.
+    LayerTransform flat = move;
+    flat.scaleX = 0.0f;
+    layer.setTransform(flat);
+    CHECK(layer.transform() == move);
+    flat.scaleX = std::nanf("");
+    layer.setTransform(flat);
+    CHECK(layer.transform() == move);
+}
+
+void testVectors() {
+    // Flattening: a rectangle keeps its corners; a circle stays on its radius.
+    VectorContent rect;
+    rect.verbs = {PathVerb::MOVE_TO, PathVerb::LINE_TO, PathVerb::LINE_TO, PathVerb::LINE_TO, PathVerb::CLOSE};
+    rect.points = {4.0f, 4.0f, 20.0f, 4.0f, 20.0f, 12.0f, 4.0f, 12.0f};
+    rect.fillColor = {0.2f, 0.4f, 0.6f, 1.0f};
+    const std::vector<Polyline> lines = flattenPath(rect);
+    CHECK(lines.size() == 1 && lines[0].closed && lines[0].points.size() == 4);
+    VectorContent circle;
+    constexpr float k = 0.5523f, r = 10.0f, c = 16.0f;
+    circle.verbs = {PathVerb::MOVE_TO, PathVerb::CUBIC_TO, PathVerb::CUBIC_TO, PathVerb::CUBIC_TO, PathVerb::CUBIC_TO, PathVerb::CLOSE};
+    circle.points = {c + r, c,         c + r,     c + k * r, c + k * r, c + r,     c,     c + r,
+                     c - k * r, c + r, c - r,     c + k * r, c - r,     c,         c - r, c - k * r,
+                     c - k * r, c - r, c,         c - r,     c + k * r, c - r,     c + r, c - k * r, c + r, c};
+    float worst = 0.0f;
+    const std::vector<Polyline> ring = flattenPath(circle);
+    CHECK(ring.size() == 1 && ring[0].closed);
+    for (const auto& p : ring[0].points) worst = std::max(worst, std::fabs(std::hypot(p[0] - c, p[1] - c) - r));
+    CHECK(worst < 0.05f);
+    // Truncated point data stops cleanly.
+    VectorContent broken = rect;
+    broken.points.resize(5);
+    CHECK(flattenPath(broken).size() == 1);
+
+    // Fill coverage: full inside, none outside, half on a half-pixel edge.
+    const std::uint32_t w = 32, h = 24;
+    auto root = LayerNode::createGroup("Document");
+    rect.points = {4.0f, 4.0f, 20.5f, 4.0f, 20.5f, 12.0f, 4.0f, 12.0f};
+    LayerNode& shape = root->addChild(LayerNode::createVector("Rect", rect));
+    CHECK(near(pixelAt(*root, w, h, 10, 8)[3], 1.0f, 1e-5f) && near(pixelAt(*root, w, h, 10, 8)[2], 0.6f, 1e-5f));
+    CHECK(pixelAt(*root, w, h, 2, 2)[3] == 0.0f);
+    CHECK(near(pixelAt(*root, w, h, 20, 8)[3], 0.5f, 1e-4f));
+    // A transformed shape moves with its layer.
+    LayerTransform t;
+    t.translateX = 8.0f;
+    shape.setTransform(t);
+    CHECK(pixelAt(*root, w, h, 6, 8)[3] == 0.0f && near(pixelAt(*root, w, h, 14, 8)[3], 1.0f, 1e-5f));
+    // Stroke: an unfilled outline, 2 px wide, covers the edge and not the middle.
+    VectorContent outline = rect;
+    outline.fillColor[3] = 0.0f;
+    outline.strokeColor = {1.0f, 0.0f, 0.0f, 1.0f};
+    outline.strokeWidth = 2.0f;
+    auto stroked = LayerNode::createGroup("Document");
+    stroked->addChild(LayerNode::createVector("Outline", outline));
+    CHECK(near(pixelAt(*stroked, w, h, 10, 4)[3], 1.0f, 1e-4f));  // on the top edge
+    CHECK(pixelAt(*stroked, w, h, 10, 8)[3] == 0.0f);             // inside
+    CHECK(near(pixelAt(*stroked, w, h, 10, 4)[0], 1.0f, 1e-5f));
+}
+
+void testAdjustmentLayers() {
+    const std::uint32_t w = 16, h = 16;
+    auto root = LayerNode::createGroup("Document");
+    fill(*root->addChild(LayerNode::createRaster("Grey", w, h)).raster(), {0.18f, 0.18f, 0.18f, 1.0f});
+    // +1 EV doubles the pixels below.
+    LayerNode& exposure = root->addChild(LayerNode::createAdjustment("Exposure", {"exposure", ExposureNode::pack({1.0f, 0.0f, 0.0f, 0.0f})}));
+    CHECK(near(pixelAt(*root, w, h, 5, 5)[0], 0.36f, 1e-3f));
+    // Opacity mixes, a mask confines it, and transparency stays transparent.
+    exposure.setOpacity(0.5f);
+    CHECK(near(pixelAt(*root, w, h, 5, 5)[0], 0.27f, 1e-3f));
+    exposure.setOpacity(1.0f);
+    exposure.addMask(w, h).writePixel(5, 5, std::vector<float>{0.0f});
+    CHECK(near(pixelAt(*root, w, h, 5, 5)[0], 0.18f, 1e-3f) && near(pixelAt(*root, w, h, 6, 5)[0], 0.36f, 1e-3f));
+    auto empty = LayerNode::createGroup("Document");
+    empty->addChild(LayerNode::createRaster("Nothing", w, h));
+    empty->addChild(LayerNode::createAdjustment("Exposure", {"exposure", ExposureNode::pack({2.0f, 0.0f, 0.0f, 0.0f})}));
+    CHECK(pixelAt(*empty, w, h, 3, 3)[3] == 0.0f);
+    // Inside a group it only reaches the layers of that group.
+    auto grouped = LayerNode::createGroup("Document");
+    fill(*grouped->addChild(LayerNode::createRaster("Below", w, h)).raster(), {0.18f, 0.18f, 0.18f, 1.0f});
+    LayerNode& group = grouped->addChild(LayerNode::createGroup("Group"));
+    LayerNode& inner = group.addChild(LayerNode::createRaster("Inner", w, h));
+    inner.raster()->writePixel(0, 0, std::vector<float>{0.1f, 0.1f, 0.1f, 1.0f});
+    group.addChild(LayerNode::createAdjustment("Exposure", {"exposure", ExposureNode::pack({1.0f, 0.0f, 0.0f, 0.0f})}));
+    CHECK(near(pixelAt(*grouped, w, h, 0, 0)[0], 0.2f, 1e-3f));   // the group's own pixel is brightened
+    CHECK(near(pixelAt(*grouped, w, h, 5, 5)[0], 0.18f, 1e-3f));  // the layer below the group is not
+    // White balance, HSL, curves and grading layers match their CPU references.
+    const WhiteBalanceParams warm{3200.0f, 10.0f};
+    auto wb = LayerNode::createGroup("Document");
+    fill(*wb->addChild(LayerNode::createRaster("Grey", w, h)).raster(), {0.3f, 0.2f, 0.1f, 1.0f});
+    wb->addChild(LayerNode::createAdjustment("WB", {"white_balance", packParams(warm)}));
+    const Rgb expected = applyWhiteBalance(whiteBalancePush(warm), {0.3f, 0.2f, 0.1f});
+    const std::array<float, 4> got = pixelAt(*wb, w, h, 1, 1);
+    CHECK(near(got[0], expected[0], 2e-3f) && near(got[1], expected[1], 2e-3f) && near(got[2], expected[2], 2e-3f));
+    // Unknown or malformed adjustments are skipped, not fatal.
+    wb->addChild(LayerNode::createAdjustment("Bad", {"denoise", std::vector<std::byte>(3)}));
+    CHECK(near(pixelAt(*wb, w, h, 1, 1)[0], expected[0], 2e-3f));
+}
+
+void testSmartObjects() {
+    const std::uint32_t w = 40, h = 30;
+    auto root = LayerNode::createGroup("Document");
+    LayerNode& object = root->addChild(LayerNode::createSmartObject("Photo", SmartObjectContent{"asset", nullptr}));
+    CHECK(!object.contentBounds().has_value());
+    CHECK(pixelAt(*root, w, h, 5, 5)[3] == 0.0f);  // nothing until loaded
+    auto pixels = std::make_shared<SparseRasterLayer>(10, 10, 4, 0.0f);
+    fill(*pixels, {0.5f, 0.25f, 0.125f, 1.0f});
+    object.smartObject()->pixels = pixels;
+    LayerTransform t;
+    t.translateX = 20.0f;
+    t.translateY = 10.0f;
+    object.setTransform(t);
+    CHECK(object.contentBounds().has_value());
+    CHECK(near(pixelAt(*root, w, h, 25, 15)[0], 0.5f, 1e-3f) && pixelAt(*root, w, h, 5, 5)[3] == 0.0f);
+}
+
+void testDirtyTracking() {
+    const std::uint32_t w = 1200, h = 700;  // 3 x 2 tiles
+    auto root = LayerNode::createGroup("Document");
+    LayerNode& background = root->addChild(LayerNode::createRaster("Background", w, h));
+    (void)takeDirtyTiles(*root, w, h);  // the structure change above: everything
+    CHECK(takeDirtyTiles(*root, w, h).empty());
+    background.raster()->writePixel(600, 100, std::vector<float>{1, 1, 1, 1});
+    CHECK((takeDirtyTiles(*root, w, h) == std::vector<TileKey>{{1, 0}}));
+    // Property changes redo the whole canvas.
+    background.setOpacity(0.5f);
+    CHECK(takeDirtyTiles(*root, w, h).size() == 6);
+    CHECK(takeDirtyTiles(*root, w, h).empty());
+    // A moved layer's pixels land where it is drawn (plus a pixel of
+    // bilinear reach into the neighbouring tiles).
+    const std::uint32_t big = 2048;  // 4 x 4 tiles
+    auto moving = LayerNode::createGroup("Document");
+    LayerNode& layer = moving->addChild(LayerNode::createRaster("Layer", big, big));
+    LayerTransform t;
+    t.translateX = 1024.0f;
+    layer.setTransform(t);
+    (void)takeDirtyTiles(*moving, big, big);
+    layer.raster()->writePixel(100, 1100, std::vector<float>{1, 1, 1, 1});  // tile (0, 2) -> drawn in (2, 2)
+    const std::vector<TileKey> moved = takeDirtyTiles(*moving, big, big);
+    CHECK(std::find(moved.begin(), moved.end(), TileKey{2, 2}) != moved.end());
+    CHECK(std::find(moved.begin(), moved.end(), TileKey{0, 2}) == moved.end());
+    CHECK(std::find(moved.begin(), moved.end(), TileKey{2, 0}) == moved.end());
+    // Only tiles on the canvas: the layer moved partly off it.
+    layer.raster()->writePixel(1500, 100, std::vector<float>{1, 1, 1, 1});  // tile (2, 0) -> drawn in (4, 0), off the canvas
+    for (const TileKey& key : takeDirtyTiles(*moving, big, big)) CHECK(key.tx < 4 && key.ty < 4);
+    // Content edits through accessors are flagged explicitly.
+    root->child(0).markCompositeDirty();
+    CHECK(takeDirtyTiles(*root, w, h).size() == 6);
+
+    // Mask preview: the mask as grey, everywhere; cleared with the layer.
+    LayerNode& masked = root->addChild(LayerNode::createRaster("Masked", w, h));
+    masked.addMask(w, h).writePixel(3, 3, std::vector<float>{0.25f});
+    root->setMaskPreview(&masked);
+    CHECK(takeDirtyTiles(*root, w, h).size() == 6);
+    const std::array<float, 4> preview = pixelAt(*root, w, h, 3, 3);
+    CHECK(near(preview[0], 0.25f, 1e-3f) && preview[3] == 1.0f);
+    CHECK(pixelAt(*root, w, h, 100, 100)[0] == 1.0f);  // unpainted mask: reveal all
+    root->removeChild(masked);
+    CHECK(root->maskPreview() == nullptr);
+}
+
+void testPainting() {
+    // Coverage: full in the hard core, none past the radius, smooth between.
+    const BrushTip tip{10.0f, 0.5f, 1.0f};
+    CHECK(dabCoverage(tip, 0.0f) == 1.0f && dabCoverage(tip, 5.0f) == 1.0f);
+    CHECK(dabCoverage(tip, 10.0f) == 0.0f && dabCoverage(tip, 12.0f) == 0.0f);
+    CHECK(dabCoverage(tip, 7.5f) > 0.0f && dabCoverage(tip, 7.5f) < 1.0f);
+    CHECK(dabCoverage(BrushTip{10.0f, 1.0f, 1.0f}, 9.5f) > 0.0f);  // a hard brush still anti-aliases its last pixel
+
+    // Paint: opaque red in the middle of a transparent layer, nothing far away.
+    SparseRasterLayer layer(64, 64);
+    const std::vector<TileKey> tiles = dabTiles(layer, 32.0f, 32.0f, 10.0f);
+    CHECK(tiles.size() == 1);
+    TileSnapshot snapshot(layer);
+    snapshot.capture(tiles);
+    paintDab(layer, 32.0f, 32.0f, tip, {1.0f, 0.0f, 0.0f, 1.0f}, DabMode::PAINT);
+    std::vector<float> px(4);
+    layer.readPixel(32, 32, px);
+    CHECK(near(px[0], 1.0f, 1e-3f) && near(px[3], 1.0f, 1e-3f));
+    layer.readPixel(32, 45, px);
+    CHECK(px[3] == 0.0f);
+    // Half flow blue over it: half-way colour, alpha stays 1.
+    paintDab(layer, 32.0f, 32.0f, BrushTip{10.0f, 0.5f, 0.5f}, {0.0f, 0.0f, 1.0f, 1.0f}, DabMode::PAINT);
+    layer.readPixel(32, 32, px);
+    CHECK(near(px[0], 0.5f, 2e-3f) && near(px[2], 0.5f, 2e-3f) && near(px[3], 1.0f, 1e-3f));
+    // Erase fades alpha.
+    paintDab(layer, 32.0f, 32.0f, BrushTip{10.0f, 0.5f, 0.5f}, {}, DabMode::ERASE);
+    layer.readPixel(32, 32, px);
+    CHECK(near(px[3], 0.5f, 2e-3f));
+    // Undo puts the tile back as it was: unallocated.
+    snapshot.restore();
+    CHECK(layer.tileCount() == 0);
+    layer.readPixel(32, 32, px);
+    CHECK(px[3] == 0.0f);
+
+    // Masks: black hides, the eraser reveals again.
+    SparseRasterLayer mask(64, 64, 1, 1.0f);
+    std::vector<float> m(1);
+    paintDab(mask, 20.0f, 20.0f, tip, {0.0f, 0.0f, 0.0f, 1.0f}, DabMode::PAINT);
+    mask.readPixel(20, 20, m);
+    CHECK(near(m[0], 0.0f, 1e-3f));
+    mask.readPixel(50, 50, m);
+    CHECK(m[0] == 1.0f);
+    paintDab(mask, 20.0f, 20.0f, tip, {}, DabMode::ERASE);
+    mask.readPixel(20, 20, m);
+    CHECK(near(m[0], 1.0f, 1e-3f));
+
+    // Clone: copies a patch 20 pixels to the right, reading before writing.
+    SparseRasterLayer canvas(64, 32);
+    canvas.writePixel(40, 16, std::vector<float>{0.2f, 0.7f, 0.1f, 1.0f});
+    cloneDab(canvas, canvas, 20.0f, 16.5f, 20.0f, 0.0f, BrushTip{4.0f, 1.0f, 1.0f});
+    canvas.readPixel(20, 16, px);
+    CHECK(near(px[1], 0.7f, 2e-3f) && near(px[3], 1.0f, 1e-3f));
+    canvas.readPixel(40, 16, px);
+    CHECK(near(px[1], 0.7f, 2e-3f));  // the source is untouched
+}
+
 }  // namespace
 
 int main() {
@@ -249,6 +561,13 @@ int main() {
     testCompositeTileHalf();
     testHalfRegionWrite();
     testParallelFor();
+    testBlendModes();
+    testTransforms();
+    testVectors();
+    testAdjustmentLayers();
+    testSmartObjects();
+    testDirtyTracking();
+    testPainting();
     if (g_failures) {
         std::cout << g_failures << " check(s) failed\n";
         return 1;

@@ -1,15 +1,17 @@
 // DarkHouse — the dockable panels.
 //
-//   Left dock    CollectionsPanel, SearchPanel, MetadataPanel
-//   Center dock  LibraryGridPanel, ViewportPanel, FilmstripPanel
-//   Right dock   LayersPanel, AdjustmentsPanel
+//   Catalog      CollectionsPanel, MetadataPanel, LibraryGridPanel, FilmstripPanel (grid and
+//                filmstrip carry the filter bar), SearchPanel ("Filters", floating)
+//   Canvas view  ViewportPanel (every workspace but Catalog)
+//   Develop      AdjustmentsPanel, MaskingPanel
+//   Compositing  LayersPanel, PropertiesPanel, ToolsPanel, ChannelsPanel, PathsPanel
 //
 // Catalog panels share one LibraryModel (collection, filter, selection) via
 // PanelContext; canvas panels work on DarkHouseApp's document and develop stack.
 #pragma once
 
-#include "denoise.hpp"
 #include "render_pipeline.hpp"
+#include "ui/develop_sections.hpp"
 #include "ui/panel.hpp"
 
 #include <glm/vec2.hpp>
@@ -30,7 +32,8 @@ private:
     void drawFolder(PanelContext& ctx, const FolderNode& folder, int depth);
 };
 
-// Search and filter UI over the selected collection.
+// Every search and filter control over the selected collection. The filter bar
+// of the grid and filmstrip covers the common ones and opens this panel.
 class SearchPanel final : public Panel {
 public:
     SearchPanel() noexcept : Panel(PanelId::SEARCH) {}
@@ -54,6 +57,7 @@ public:
     void draw(PanelContext& ctx) override;
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
     [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
+    [[nodiscard]] bool canvasBackground() const noexcept override { return true; }
 };
 
 // The developed canvas (the develop graph's output texture), with zoom and pan.
@@ -63,6 +67,7 @@ public:
     void draw(PanelContext& ctx) override;
     [[nodiscard]] bool fullBleed() const noexcept override { return true; }
     [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
+    [[nodiscard]] bool canvasBackground() const noexcept override { return true; }
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override {
         return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     }
@@ -82,10 +87,12 @@ public:
     void draw(PanelContext& ctx) override;
     [[nodiscard]] ImGuiWindowFlags windowFlags() const noexcept override { return ImGuiWindowFlags_NoScrollbar; }
     [[nodiscard]] bool autoHideTabBar() const noexcept override { return true; }
+    [[nodiscard]] bool canvasBackground() const noexcept override { return true; }
 };
 
 // Unified layer stack: parametric, raster, vector, smart-object and group
-// layers of the open document, with add / delete / reorder and properties.
+// layers of the open document, with the selected layer's blend mode and
+// opacity, add / delete / reorder.
 class LayersPanel final : public Panel {
 public:
     LayersPanel() noexcept : Panel(PanelId::LAYERS) {}
@@ -94,38 +101,75 @@ public:
 private:
     void drawLayerRow(PanelContext& ctx, LayerNode& layer, int depth);
     void drawAddMenu(PanelContext& ctx);
-    void drawProperties(PanelContext& ctx, LayerNode& layer);
     void addLayer(PanelContext& ctx, std::unique_ptr<LayerNode> layer);
     [[nodiscard]] std::string nextName(const char* base);
 
-    LayerNode* selected_ = nullptr;  // validated against the document every frame
     int nameCounter_ = 1;
 };
 
-// Develop adjustments. Tone drives the GPU develop graph (exposure node);
-// white balance, presence and HSL are UI previews until their nodes exist.
+// The selected layer (CanvasState): name, layer mask (including one made
+// from a develop mask), its content's settings (adjustment parameters,
+// vector fill and stroke, smart-object source) and its transform.
+class PropertiesPanel final : public Panel {
+public:
+    PropertiesPanel() noexcept : Panel(PanelId::PROPERTIES) {}
+    void draw(PanelContext& ctx) override;
+
+private:
+    void drawTransform(LayerNode& layer);
+
+    bool linkScale_ = true;
+};
+
+// Develop adjustments: white balance, tone, presence, tone curve, colour
+// mixer, colour grading, noise reduction and lens corrections, all live on
+// the GPU develop graph.
 class AdjustmentsPanel final : public Panel {
 public:
     AdjustmentsPanel() noexcept : Panel(PanelId::ADJUSTMENTS) {}
     void draw(PanelContext& ctx) override;
 
 private:
-    void drawTone(PanelContext& ctx);
-    void drawNoiseReduction(PanelContext& ctx);
-    void drawColor();
-    void drawHsl();
+    BasicSection basic_;
+    ToneCurveSection curve_;
+    ColorMixerSection mixer_;
+    ColorGradingSection grading_;
+    DetailSection detail_;
+    LensCorrectionSection lens_;
+};
 
-    ExposureParams tone_{};
-    bool toneEditing_ = false;  // while a slider is held, the panel owns the values
-    DenoiseParams noise_{};     // kept while noise reduction is off, so re-enabling restores it
-    bool noiseEditing_ = false;
-    float temperature_ = 5500.0f;
-    float tint_ = 0.0f;
-    float vibrance_ = 0.0f;
-    float saturation_ = 0.0f;
-    std::array<float, 8> hue_{};
-    std::array<float, 8> hslSaturation_{};
-    std::array<float, 8> luminance_{};
+// Local adjustments: the photo's mask stack (brush, gradients, ranges and the
+// AI placeholders), each mask's components with add / subtract / intersect,
+// invert and opacity, the brush options and the edits each mask applies.
+class MaskingPanel final : public Panel {
+public:
+    MaskingPanel() noexcept : Panel(PanelId::MASKING) {}
+    void draw(PanelContext& ctx) override;
+
+private:
+    int maskCounter_ = 0;
+};
+
+// Canvas tools (ui/canvas_tools.hpp) and the active tool's options.
+class ToolsPanel final : public Panel {
+public:
+    ToolsPanel() noexcept : Panel(PanelId::TOOLS) {}
+    void draw(PanelContext& ctx) override;
+};
+
+// Channel views: RGB, red, green, blue, alpha, and the selected layer's mask.
+class ChannelsPanel final : public Panel {
+public:
+    ChannelsPanel() noexcept : Panel(PanelId::CHANNELS) {}
+    void draw(PanelContext& ctx) override;
+};
+
+// The document's vector paths (vector layers): select, draw, edit points,
+// fill / stroke, delete, and make the layer below's mask from a path.
+class PathsPanel final : public Panel {
+public:
+    PathsPanel() noexcept : Panel(PanelId::PATHS) {}
+    void draw(PanelContext& ctx) override;
 };
 
 }  // namespace darkhouse::ui

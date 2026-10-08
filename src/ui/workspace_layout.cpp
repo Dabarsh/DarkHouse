@@ -4,11 +4,15 @@
 
 #include <algorithm>
 #include <initializer_list>
+#include <optional>
+#include <utility>
+#include <vector>
 
 namespace darkhouse::ui {
 namespace {
 
-constexpr std::array<AppMode, kWorkspaceCount> kModes{AppMode::CATALOG, AppMode::CANVAS, AppMode::HYBRID_SPLIT};
+constexpr std::array<AppMode, kWorkspaceCount> kModes{AppMode::CATALOG, AppMode::DEVELOP, AppMode::CANVAS,
+                                                      AppMode::HYBRID_SPLIT};
 
 // Splits `node` and returns the new node on `dir`; `node` becomes the remainder.
 ImGuiID split(ImGuiID& node, ImGuiDir dir, float ratio) {
@@ -20,9 +24,22 @@ ImGuiID split(ImGuiID& node, ImGuiDir dir, float ratio) {
 
 }  // namespace
 
+const std::array<AppMode, kWorkspaceCount>& workspaceModes() noexcept { return kModes; }
+
 const char* workspaceTitle(AppMode mode) noexcept {
     switch (mode) {
     case AppMode::CATALOG: return "Catalog";
+    case AppMode::DEVELOP: return "Develop (Lightroom)";
+    case AppMode::CANVAS: return "Canvas & Compositing (Photoshop)";
+    case AppMode::HYBRID_SPLIT: return "Split";
+    }
+    return "?";
+}
+
+const char* workspaceShortTitle(AppMode mode) noexcept {
+    switch (mode) {
+    case AppMode::CATALOG: return "Catalog";
+    case AppMode::DEVELOP: return "Develop";
     case AppMode::CANVAS: return "Canvas";
     case AppMode::HYBRID_SPLIT: return "Split";
     }
@@ -34,34 +51,39 @@ WorkspaceLayoutManager::WorkspaceLayoutManager() {
         Workspace& workspace = workspaces_[index(mode)];
         workspace.mode = mode;
         const std::string prefix =
-            std::string("DarkHouse.") + workspaceTitle(mode) + ".v" + std::to_string(kLayoutVersion);
+            std::string("DarkHouse.") + workspaceShortTitle(mode) + ".v" + std::to_string(kLayoutVersion);
         workspace.dockspace = ImHashStr((prefix + ".DockSpace").c_str());
         for (PanelId panel : allPanels()) {
             const PanelInfo& info = panelInfo(panel);
             workspace.windowNames[index(panel)] = std::string(info.title) + "###" + prefix + "." + info.key;
         }
         applyDefaultPanelSet(workspace);
+        defaultFrontTabs(workspace);
     }
 }
 
-void WorkspaceLayoutManager::applyDefaultPanelSet(Workspace& workspace) {
-    workspace.open.fill(false);
-    auto show = [&](std::initializer_list<PanelId> panels) {
-        for (PanelId panel : panels) workspace.open[index(panel)] = true;
+bool WorkspaceLayoutManager::inDefaultLayout(AppMode mode, PanelId panel) noexcept {
+    const auto among = [panel](std::initializer_list<PanelId> panels) {
+        return std::find(panels.begin(), panels.end(), panel) != panels.end();
     };
-    switch (workspace.mode) {
-    case AppMode::CATALOG:
-        show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::ASSET_GRID});
-        break;
+    // Filters (PanelId::SEARCH) is in none: the grid and filmstrip filter bar covers it.
+    switch (mode) {
+    case AppMode::CATALOG: return among({PanelId::COLLECTIONS, PanelId::METADATA, PanelId::ASSET_GRID});
+    case AppMode::DEVELOP:
+        return among({PanelId::COLLECTIONS, PanelId::METADATA, PanelId::VIEWPORT, PanelId::FILMSTRIP,
+                      PanelId::ADJUSTMENTS, PanelId::MASKING});
     case AppMode::CANVAS:
-        show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::VIEWPORT, PanelId::FILMSTRIP,
-              PanelId::LAYERS, PanelId::ADJUSTMENTS});
-        break;
+        return among({PanelId::TOOLS, PanelId::VIEWPORT, PanelId::LAYERS, PanelId::CHANNELS, PanelId::PATHS,
+                      PanelId::PROPERTIES, PanelId::MASKING});
     case AppMode::HYBRID_SPLIT:
-        show({PanelId::COLLECTIONS, PanelId::SEARCH, PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT,
-              PanelId::FILMSTRIP, PanelId::LAYERS, PanelId::ADJUSTMENTS});
-        break;
+        return among({PanelId::COLLECTIONS, PanelId::METADATA, PanelId::ASSET_GRID, PanelId::VIEWPORT,
+                      PanelId::FILMSTRIP, PanelId::ADJUSTMENTS, PanelId::MASKING});
     }
+    return false;
+}
+
+void WorkspaceLayoutManager::applyDefaultPanelSet(Workspace& workspace) {
+    for (PanelId panel : allPanels()) workspace.open[index(panel)] = inDefaultLayout(workspace.mode, panel);
 }
 
 void WorkspaceLayoutManager::resetLayout(AppMode mode) noexcept { workspaces_[index(mode)].resetPending = true; }
@@ -79,14 +101,19 @@ ImGuiID WorkspaceLayoutManager::dockspaceId(AppMode mode) const noexcept { retur
 void WorkspaceLayoutManager::submit(AppMode active) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    // Build every missing layout up front: a keep-alive DockSpace() would
-    // otherwise create an empty node and the default would never be applied.
-    for (Workspace& workspace : workspaces_) {
-        if (workspace.resetPending || ImGui::DockBuilderGetNode(workspace.dockspace) == nullptr) {
-            if (workspace.resetPending) applyDefaultPanelSet(workspace);
-            buildDefaultLayout(workspace, viewport->WorkSize);
-            workspace.resetPending = false;
-        }
+    // A workspace's default layout is built when it is first shown (or
+    // reset), so its windows appear right after and open on the intended
+    // tabs. Until then it has no dock node and gets no keep-alive DockSpace()
+    // below, which would create an empty node that hides the missing layout.
+    Workspace& current = workspaces_[index(active)];
+    if (lastActive_ != active) {
+        current.restoreFrames = 3;  // shown (again): put its tabs back
+        lastActive_ = active;
+    }
+    if (current.resetPending || ImGui::DockBuilderGetNode(current.dockspace) == nullptr) {
+        if (current.resetPending) applyDefaultPanelSet(current);
+        buildDefaultLayout(current, viewport->WorkSize);
+        current.resetPending = false;
     }
 
     // Same host window as ImGui::DockSpaceOverViewport(), but it also carries
@@ -106,7 +133,7 @@ void WorkspaceLayoutManager::submit(AppMode active) {
     ImGui::PopStyleVar(3);
     ImGui::DockSpace(dockspaceId(active), ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
     for (const Workspace& workspace : workspaces_) {
-        if (workspace.mode != active) {
+        if (workspace.mode != active && ImGui::DockBuilderGetNode(workspace.dockspace) != nullptr) {
             ImGui::DockSpace(workspace.dockspace, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_KeepAliveOnly);
         }
     }
@@ -142,58 +169,98 @@ void WorkspaceLayoutManager::buildDefaultLayout(Workspace& workspace, ImVec2 siz
     ImGuiID center = root;
     switch (workspace.mode) {
     case AppMode::CATALOG: {
-        // | Search      |                 |
         // | Collections |  Library grid   |
         // | Metadata    |                 |
-        ImGuiID left = splitWidth(center, ImGuiDir_Left, 320.0f, 0.16f, 0.30f);
-        const ImGuiID metadata = split(left, ImGuiDir_Down, 0.36f);
-        const ImGuiID search = split(left, ImGuiDir_Up, 0.47f);
-        dock(PanelId::SEARCH, search);
+        ImGuiID left = splitWidth(center, ImGuiDir_Left, 300.0f, 0.15f, 0.28f);
+        const ImGuiID metadata = split(left, ImGuiDir_Down, 0.50f);
         dock(PanelId::COLLECTIONS, left);
         dock(PanelId::METADATA, metadata);
         dock(PanelId::ASSET_GRID, center);
         break;
     }
-    case AppMode::CANVAS: {
-        // | Collections |  Viewport       | Layers      |
-        // | Metadata    |-----------------|             |
-        // |             |  Filmstrip      | Adjustments |
-        ImGuiID right = splitWidth(center, ImGuiDir_Right, 360.0f, 0.18f, 0.30f);
-        const ImGuiID adjustments = split(right, ImGuiDir_Down, 0.55f);
-        ImGuiID left = splitWidth(center, ImGuiDir_Left, 300.0f, 0.15f, 0.28f);
+    case AppMode::DEVELOP: {
+        // | Collections |  Viewport       | Adjustments |
+        // | Metadata    |-----------------|  (Masking)  |
+        // |             |  Filmstrip      |             |
+        const ImGuiID right = splitWidth(center, ImGuiDir_Right, 380.0f, 0.20f, 0.32f);
+        ImGuiID left = splitWidth(center, ImGuiDir_Left, 280.0f, 0.14f, 0.26f);
         const ImGuiID metadata = split(left, ImGuiDir_Down, 0.50f);
         const ImGuiID filmstrip = splitHeight(center, ImGuiDir_Down, 150.0f, 0.12f, 0.28f);
         dock(PanelId::COLLECTIONS, left);
-        dock(PanelId::SEARCH, left);
         dock(PanelId::METADATA, metadata);
         dock(PanelId::FILMSTRIP, filmstrip);
-        dock(PanelId::LAYERS, right);
-        dock(PanelId::ADJUSTMENTS, adjustments);
+        dock(PanelId::ADJUSTMENTS, right);
+        dock(PanelId::MASKING, right);
+        dock(PanelId::VIEWPORT, center);
+        break;
+    }
+    case AppMode::CANVAS: {
+        // | Tools |                          | Properties (Masking)       |
+        // |       |  Viewport                |----------------------------|
+        // |       |                          | Layers (Channels, Paths)   |
+        ImGuiID right = splitWidth(center, ImGuiDir_Right, 360.0f, 0.18f, 0.30f);
+        const ImGuiID layers = split(right, ImGuiDir_Down, 0.55f);
+        const ImGuiID tools = splitWidth(center, ImGuiDir_Left, 210.0f, 0.10f, 0.18f);
+        dock(PanelId::TOOLS, tools);
+        dock(PanelId::PROPERTIES, right);
+        dock(PanelId::MASKING, right);
+        dock(PanelId::LAYERS, layers);
+        dock(PanelId::CHANNELS, layers);
+        dock(PanelId::PATHS, layers);
         dock(PanelId::VIEWPORT, center);
         break;
     }
     case AppMode::HYBRID_SPLIT: {
-        // | Collections | Library | Viewport | Layers      |
-        // | Metadata    |------------------- |             |
-        // |             |      Filmstrip     | Adjustments |
-        ImGuiID right = splitWidth(center, ImGuiDir_Right, 340.0f, 0.17f, 0.28f);
-        const ImGuiID adjustments = split(right, ImGuiDir_Down, 0.55f);
+        // | Collections | Library | Viewport | Adjustments |
+        // | Metadata    |--------------------|  (Masking)  |
+        // |             |      Filmstrip     |             |
+        const ImGuiID right = splitWidth(center, ImGuiDir_Right, 340.0f, 0.17f, 0.28f);
         ImGuiID left = splitWidth(center, ImGuiDir_Left, 280.0f, 0.14f, 0.26f);
         const ImGuiID metadata = split(left, ImGuiDir_Down, 0.50f);
         const ImGuiID filmstrip = splitHeight(center, ImGuiDir_Down, 150.0f, 0.12f, 0.28f);
         const ImGuiID grid = split(center, ImGuiDir_Left, 0.42f);
         dock(PanelId::COLLECTIONS, left);
-        dock(PanelId::SEARCH, left);
         dock(PanelId::METADATA, metadata);
         dock(PanelId::FILMSTRIP, filmstrip);
         dock(PanelId::ASSET_GRID, grid);
-        dock(PanelId::LAYERS, right);
-        dock(PanelId::ADJUSTMENTS, adjustments);
+        dock(PanelId::ADJUSTMENTS, right);
+        dock(PanelId::MASKING, right);
         dock(PanelId::VIEWPORT, center);
         break;
     }
     }
     ImGui::DockBuilderFinish(root);
+    defaultFrontTabs(workspace);
+}
+
+void WorkspaceLayoutManager::defaultFrontTabs(Workspace& workspace) {
+    workspace.front.fill(false);
+    auto front = [&](std::initializer_list<PanelId> panels) {
+        for (PanelId panel : panels) workspace.front[index(panel)] = true;
+    };
+    switch (workspace.mode) {
+    case AppMode::CATALOG: front({PanelId::COLLECTIONS}); break;
+    case AppMode::DEVELOP:
+    case AppMode::HYBRID_SPLIT: front({PanelId::COLLECTIONS, PanelId::ADJUSTMENTS}); break;
+    case AppMode::CANVAS: front({PanelId::PROPERTIES, PanelId::LAYERS}); break;
+    }
+    workspace.restoreFrames = 3;
+}
+
+void WorkspaceLayoutManager::updateTabs(AppMode active) {
+    Workspace& workspace = workspaces_[index(active)];
+    for (PanelId panel : allPanels()) {
+        if (!workspace.open[index(panel)]) continue;
+        ImGuiWindow* window = ImGui::FindWindowByName(workspace.windowNames[index(panel)].c_str());
+        ImGuiTabBar* tabBar = window && window->DockNode ? window->DockNode->TabBar : nullptr;
+        if (!tabBar) continue;
+        if (workspace.restoreFrames > 0) {
+            if (workspace.front[index(panel)] && tabBar->SelectedTabId != window->TabId) tabBar->NextSelectedTabId = window->TabId;
+        } else {
+            workspace.front[index(panel)] = tabBar->SelectedTabId == window->TabId;
+        }
+    }
+    if (workspace.restoreFrames > 0) --workspace.restoreFrames;
 }
 
 }  // namespace darkhouse::ui

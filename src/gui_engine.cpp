@@ -80,8 +80,20 @@ void GuiEngine::initImGui() {
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     layer_->configureStyle(style, io);
-    const float scale = window_->contentScale();
-    style.ScaleAllSizes(scale);
+
+    if (!ImGui_ImplGlfw_InitForVulkan(window_->handle(), /*install_callbacks=*/true)) {
+        throw std::runtime_error("ImGui_ImplGlfw_InitForVulkan failed");
+    }
+    platformBackendReady_ = true;
+
+    // Sizes and fonts must be scaled by the same factor, and io.ConfigDpiScaleFonts
+    // makes ImGui take the font's from the backend: the monitor's content scale
+    // on Windows and X11, but 1 on macOS and Wayland, where the framebuffer is
+    // denser than the window instead. So ask the backend, not GLFW: GLFW reports
+    // 2 on a Retina display, which doubled every padding under 1x text.
+    const float backendScale = ImGui_ImplGlfw_GetContentScaleForWindow(window_->handle());
+    const float scale = backendScale > 0.0f ? backendScale : 1.0f;
+    if (scale != 1.0f) style.ScaleAllSizes(scale);  // truncates to whole pixels, so not at 1x
     style.FontScaleDpi = scale;
     io.ConfigDpiScaleFonts = true;
     io.ConfigDpiScaleViewports = true;
@@ -90,11 +102,6 @@ void GuiEngine::initImGui() {
         style.WindowRounding = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
     }
-
-    if (!ImGui_ImplGlfw_InitForVulkan(window_->handle(), /*install_callbacks=*/true)) {
-        throw std::runtime_error("ImGui_ImplGlfw_InitForVulkan failed");
-    }
-    platformBackendReady_ = true;
 }
 
 void GuiEngine::configureGpu(VulkanContextOptions& options) {
@@ -167,6 +174,8 @@ bool GuiEngine::pumpPlatformEvents(DarkHouseApp& app) {
     // A photo being decoded animates the viewport and must appear the moment
     // it is ready: draw at the display rate until then (and settle after).
     if (app.photo().state == PhotoStatus::State::LOADING) idleFrames_ = 0;
+    // Likewise while the develop graph re-renders: the result must show up.
+    if (app.developBusy()) idleFrames_ = 0;
     if (window_->minimized()) {
         // Nothing to draw. Block briefly instead of spinning, but keep the
         // engine loop turning so imports still complete while minimized.

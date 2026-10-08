@@ -9,7 +9,7 @@ Stack: C++20 · CMake ≥ 3.22 · SQLite 3 (WAL) · Vulkan 1.3 / SPIR-V ·
 GLFW · Dear ImGui (docking, Vulkan backend with dynamic rendering) · GLM ·
 ONNX Runtime
 
-![The Canvas workspace: a test chart rendered through the GPU develop graph, with the layer stack, adjustments, metadata and filmstrip](docs/images/workspace-canvas.png)
+![The Canvas & Compositing workspace in the blue and black theme: an opened photo with the tools on the left and the properties, layers, channels and paths panels on the right](docs/images/workspace-canvas.png)
 
 ---
 
@@ -49,13 +49,13 @@ ONNX Runtime
             ┌──────────────────────────── GuiEngine (FrontEnd) ─────────────────────────────┐
             │ PlatformWindow (GLFW) · Swapchain (FIFO/mailbox, 2 frames in flight)          │
             │ Dear ImGui: GLFW platform + Vulkan renderer (dynamic rendering), docking      │
-            │ GuiLayer = DarkHouseShell: menu · workspace switcher · status bar ·           │
+            │ GuiLayer = DarkHouseShell: toolbar (menus · Import · workspace switcher) ·    │
             │            WorkspaceLayoutManager · panels · LibraryModel (view model)        │
             └───────────────┬───────────────────────────────▲───────────────────────────────┘
                AppEvents    │                               │  FrameContext (mode, canvas texture)
                             ▼                               │
                          ┌──────────────────────────────────┴┐
-                         │           DarkHouseApp            │  modes: CATALOG | CANVAS | HYBRID_SPLIT
+                         │           DarkHouseApp            │  modes: CATALOG | DEVELOP | CANVAS | HYBRID_SPLIT
                          │ event queue → frame loop → pacing │
                          └──┬─────────┬─────────┬────────────┘
                             │         │         │
@@ -77,22 +77,32 @@ ONNX Runtime
 | `include/import_scan.hpp` | Expands files and folders into importable image paths (CLI `--import`, Import dialog, drag and drop). |
 | `include/vulkan_context.hpp` | `PixelFormat`, `GPUTexture`, `VulkanContext` (instance, device, queue, optional window surface, validation messenger, textures, uploads) and synchronization2 barrier helpers. |
 | `include/swapchain.hpp` | `Swapchain`: present mode and format selection, transparent recreation, per-frame fences and semaphores. |
-| `include/render_pipeline.hpp` | `ComputeNode`, `PointOperatorNode`, `ExposureNode`, `DisplayTransformNode`, `RenderPipelineGraph` (with per-node GPU timestamps). |
+| `include/render_pipeline.hpp` | `ComputeNode`, `PointOperatorNode` (push constants and an optional lookup-table buffer), `ExposureNode`, `DisplayTransformNode` (with channel views), `RenderPipelineGraph` (with per-node GPU timestamps). |
+| `include/develop_stack.hpp` | The canonical develop order (denoise, lens corrections, white balance, exposure, tone curve, HSL, colour grading, local adjustments) and stack helpers. |
+| `include/color_adjust.hpp`, `include/color_nodes.hpp` | White balance, tone, HSL mixer and colour grading: parameters, CPU references and the GPU nodes (`shaders/white_balance.comp`, `hsl_adjust.comp`, `color_grading.comp`, `color_common.glsl`, `tone_common.glsl`). |
+| `include/tone_curve.hpp` | Point tone curves: monotone spline, lookup tables, the CPU reference (`shaders/tone_curve.comp`). |
+| `include/lens_database.hpp`, `include/lens_correction.hpp` | lensfun profile reader and matcher; the lens correction model, CPU reference and GPU node (`shaders/lens_correction.comp`). |
+| `include/mask_engine.hpp`, `include/local_adjust_node.hpp` | Masks for local adjustments (brush, gradients, ranges, AI placeholders), their CPU evaluation, GPU mask generation into RGBA16F array textures, and the masked local adjustment node (`shaders/mask_generate.comp`, `local_adjust.comp`). |
+| `include/adjustment_ops.hpp` | CPU point adjustments for adjustment layers (the develop nodes' references). |
+| `include/raster_paint.hpp` | Brush, eraser and clone dabs on raster layers and masks, and undo snapshots. |
 | `shaders/exposure.comp` | Exposure (EV), highlights/shadows and contrast on RGBA16F storage images, in 16×16 workgroups. |
 | `shaders/display_srgb.comp` | The view transform at the end of the develop graph: scene-linear RGBA16F to dithered sRGB RGBA8 for the viewport. |
 | `include/denoise.hpp`, `include/denoise_node.hpp` | Noise reduction: parameters, the CPU reference, and the GPU `DenoiseNode` (see [Noise reduction](#noise-reduction)). |
 | `shaders/denoise_*.comp`, `shaders/denoise_config.h` | The five denoise passes and the constants they share with the C++ code. |
 | `include/image_decoder.hpp` | `decodeImage()`: JPEG/PNG/TIFF/HDR/..., embedded RAW previews, EXIF orientation, linear-light downscale (see [Live photo preview](#live-photo-preview)). |
-| `include/layer_stack.hpp` | `TILE_SIZE`, FP16 tiles (with F16C bulk conversion), `SparseRasterLayer`, `LayerNode` tree, blend modes, CPU reference compositor. |
+| `include/layer_stack.hpp` | `TILE_SIZE`, FP16 tiles (with F16C bulk conversion), `SparseRasterLayer`, `LayerNode` tree with transforms, 16 blend modes, vector flattening, and the CPU tile compositor (pixels, vectors, adjustment layers, smart objects, mask preview). |
 | `include/ai_segmentation.hpp` | `AISegmentationEngine` (subject/sky) and the ONNX Runtime backend. |
 | `include/app_controller.hpp` | `DarkHouseApp`, `AppMode`, `AppEvent`, and the `FrontEnd` seam (with its GPU lifecycle) for the UI layer. |
 | `include/platform_window.hpp` | `PlatformWindow`: the GLFW window, surface creation, resize/drop/input tracking. |
 | `include/gui_engine.hpp` | `GuiEngine` (the desktop `FrontEnd`) and the `GuiLayer` interface. |
-| `include/ui/shell.hpp` | `DarkHouseShell`: main menu, workspace switcher, status bar, Import dialog. |
-| `include/ui/workspace_layout.hpp` | `WorkspaceLayoutManager`: one dockspace and default layout per workspace. |
+| `include/ui/shell.hpp` | `DarkHouseShell`: the toolbar (menus, Import, workspace switcher, import activity, panel toggles) and the Import dialog. |
+| `include/ui/workspace_layout.hpp` | `WorkspaceLayoutManager`: one dockspace and default layout per workspace (Catalog, Develop, Canvas & Compositing, Split), and each dock's selected tab. |
+| `include/ui/develop_sections.hpp`, `include/ui/masking.hpp` | The Develop controls bound to their GPU nodes, and the masking state and viewport tools shared by the Masking panel. |
+| `include/ui/canvas_state.hpp`, `include/ui/canvas_tools.hpp` | The Canvas selection, smart-object loading, channel views, and the canvas tools with undo. |
 | `include/ui/library_model.hpp` | `LibraryModel`: collections, search filter, sort and selection shared by the catalog panels. |
 | `include/ui/panels.hpp` | The dockable panels (see [Desktop UI](#desktop-ui)). |
-| `include/ui/widgets.hpp`, `include/ui/theme.hpp` | Shared widgets (ratings, labels, thumbnail cards, gradient sliders) and the DarkHouse look. |
+| `include/ui/theme.hpp` | Design tokens: sizes on a 4 px grid, the blue and black palette, and the ImGui style built from them. |
+| `include/ui/widgets.hpp` | Shared widgets: segmented control, icon and label buttons, inspector slider rows, section headers, status pills, colour wheel, curve editor, ratings, labels, thumbnail cards, vector icons and popup shadows. |
 | `src/main.cpp` | Command-line interface and front-end selection. |
 | `tests/` | CTest programs (see [Testing](#testing)). |
 
@@ -105,7 +115,7 @@ Each frame runs these steps in order:
 2. Queued events are drained. Events are thread-safe to post from anywhere.
 3. Finished imports are collected, and a finished photo decode replaces the
    document (see [Live photo preview](#live-photo-preview)).
-4. If the canvas is visible (`CANVAS` / `HYBRID_SPLIT`), dirty document tiles
+4. If the canvas is visible (every mode but `CATALOG`), dirty document tiles
    are composited to FP16 on all cores and uploaded in one submission, and
    the develop graph is re-evaluated only when something changed.
 5. `FrontEnd::drawFrame` builds the UI and presents. The viewport samples the
@@ -141,17 +151,28 @@ tooltips, and at 10 Hz while imports are running. An idle window costs about
 
 ## Desktop UI
 
-![The Catalog workspace: search, collections, metadata and the library grid](docs/images/workspace-catalog.png)
+![The Catalog workspace: collections, metadata and the library grid under its filter bar](docs/images/workspace-catalog.png)
 
 DarkHouse opens in a window titled **DarkHouse**, 85% of the screen by
-default. Three workspaces follow the application mode. Switch with the
-centred **Catalog | Canvas | Split** buttons or `Ctrl+1/2/3`:
+default. Four workspaces follow the application mode, and the photo tools
+are split the way photographers know them: parametric development in
+**Develop (Lightroom)**, layer compositing in **Canvas & Compositing
+(Photoshop)**. Switch with the tabs centred in the top bar (short names when
+the window is narrow) or `Ctrl+1/2/3/4`:
 
 | Workspace | Focus | Default layout |
 | --- | --- | --- |
-| **Catalog** | Asset grid | Search / Collections / Metadata · Library grid |
-| **Canvas** | Layer stack | Collections + Search / Metadata · Viewport over Filmstrip · Layers / Adjustments |
-| **Split** | Dual view | Collections + Search / Metadata · Library grid + Viewport over Filmstrip · Layers / Adjustments |
+| **Catalog** | Asset grid | Collections / Metadata · Library grid |
+| **Develop (Lightroom)** | One photo, parametric | Collections / Metadata · Viewport over Filmstrip · Adjustments + Masking |
+| **Canvas & Compositing (Photoshop)** | Layer document | Tools · Viewport (zoom 0.5 % to 25 600 %, pixel grid from 800 %) · Properties + Masking over Layers + Channels + Paths |
+| **Split** | Library + develop | Collections / Metadata · Library grid + Viewport over Filmstrip · Adjustments + Masking |
+
+![The Develop workspace: the opened photo over the filmstrip and its filter bar, with Adjustments and Masking on the right](docs/images/workspace-develop.png)
+
+Opening a photo from the Catalog goes to Develop; from any other workspace
+it stays where it is. Masks made in the Masking panel serve both modules:
+Develop applies local edits through them, and in Canvas the Properties
+panel's **From Mask...** writes one into the selected layer's mask.
 
 Every panel is a dockable ImGui window. Each workspace has its own dockspace
 and its own arrangement, and all of them persist to
@@ -163,13 +184,18 @@ dragged out into their own OS windows, for example a second monitor.
 | Dock | Panel | What it does |
 | --- | --- | --- |
 | Left | **Collections** | All Photographs, Imported This Session, Picks, Rejected, Unrated; the folder tree; smart collections (Five Stars, High ISO, Wide Angle, Telephoto), with counts. |
-| Left | **Search** | Text (file name, camera, lens), minimum rating, flag, colour label, camera, ISO range, sort order. Filtering runs in memory on every keystroke. |
+| Floating | **Filters** | Every filter in one place: text (file name, camera, lens), minimum rating, flag, colour label, camera, ISO range, sort order. Filtering runs in memory on every keystroke. Opened by the button at the right end of a filter bar, or View → Panels. |
 | Left | **Metadata** | Rating, pick/reject and colour label (editable), camera, lens, exposure, dates, GPS and file details of the selected photo. |
 | Center | **Library** | Virtualized thumbnail grid with zoom, context menu, tooltips and keyboard culling. |
-| Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard. Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% buttons switch zoom. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
+| Center | **Viewport** | The open photo with its develop stack applied live, over a transparency checkerboard (every workspace but Catalog). Wheel zooms around the cursor, drag pans, double-click or the Fit / 100% buttons switch zoom. Shows a spinner while a photo decodes and the reason when one cannot be shown. |
 | Center | **Filmstrip** | The current collection as a horizontal strip, kept in sync with the grid. |
-| Right | **Layers** | The unified layer stack: parametric (ADJ), raster (PX), vector (VEC), smart object (OBJ) and group (GRP) layers, with visibility, blend mode, opacity, masks, add/delete/reorder. |
-| Right | **Adjustments** | Tone (exposure, contrast, highlights, shadows) and Noise Reduction (luminance, color, detail, automatic or manual noise level) run live on the GPU and are saved to the photo's edit stack on release. White balance, presence and 8-band HSL sliders are previews until their GPU nodes exist. |
+| Develop | **Adjustments** | White balance (temperature in kelvin, tint), tone (exposure, contrast, highlights, shadows), presence (vibrance, saturation), point tone curves (composite RGB and per channel, monotone spline, presets), the 8-band colour mixer (hue, saturation, luminance), 3-way colour grading wheels with blending and balance, noise reduction, and lens corrections (a lensfun lens profile matched to the photo's lens, with distortion / vignetting amounts and chromatic aberration removal, plus manual distortion, vignetting, fringe, scale and constrain crop). Every control runs live on the GPU develop graph and is saved to the photo's edit stack on release. |
+| Develop, Canvas | **Masking** | Local adjustments: a stack of masks built from brush, linear and radial gradient, luminance and colour range components (and Subject / Sky placeholders), each added, subtracted or intersected, inverted and faded; brush size, feather, flow and erase; the edits each mask applies. The viewport paints and drags the selected component and shows the selected mask as a red overlay. |
+| Canvas | **Layers** | The unified layer stack: pixel (PX), adjustment (ADJ: exposure, white balance, curves, hue/saturation, colour grading, applied to the layers below them in their group), vector (VEC: anti-aliased fill and stroke), smart object (OBJ: another catalog photo with its exposure, colour and curve edits, decoded in the background) and group (GRP) layers, with visibility, the selected layer's blend mode (16 W3C modes: normal, darken, multiply, colour burn, lighten, screen, colour dodge, overlay, soft/hard light, difference, exclusion, hue, saturation, colour, luminosity) and opacity, add/delete/reorder. |
+| Canvas | **Tools** | Hand (H), Move (V: drag to move, corners to scale, outside to rotate), Brush (B) and Eraser (E) on the selected pixel layer or its mask, Clone Stamp (S: Alt+click a source), Pen (P: click corners, close or Enter), Direct Selection (A: drag path points) and Eyedropper (I), with size (`[` `]`), hardness, flow, colour and target options; Ctrl+Z undoes the last stroke, transform or path edit (32 steps). |
+| Canvas | **Channels** | View the red, green, blue or alpha channel of the canvas as grey (in the display transform), or the selected layer's mask. |
+| Canvas | **Paths** | The document's vector paths: new (pen), edit points, delete, fill and stroke with width, and "Mask Layer Below from Path". |
+| Canvas | **Properties** | The selected layer: name, layer mask (add, enable, remove, or make from a Masking panel mask), its content (adjustment parameters with sliders, curve editor and wheels; vector fill and stroke; smart-object source) and its transform (position, size with linked aspect, angle, flip). The viewport outlines the selected layer. |
 | Floating | **Engine** | GPU, validation, swapchain and frame-timing diagnostics, and the GPU time of every develop node (View → Panels). |
 
 Keyboard (grid and filmstrip focused):
@@ -180,14 +206,55 @@ Keyboard (grid and filmstrip focused):
 | `0`–`5` | Star rating |
 | `P` / `X` / `U` | Pick / reject / unflag |
 | `6` `7` `8` `9` | Red / yellow / green / blue label (press again to clear) |
-| `Enter`, double-click | Open in the Canvas workspace |
-| `Ctrl+1/2/3` | Catalog / Canvas / Split |
+| `Enter`, double-click | Open the photo (in Develop when coming from the Catalog) |
+| `Ctrl+1/2/3/4` | Catalog / Develop / Canvas / Split |
 | `Ctrl+I` | Import Photos… (or drop files and folders onto the window) |
 | `Ctrl+Q` | Quit |
 
 Grid and filmstrip thumbnails are still placeholders tinted from each file's
 content hash; the canvas shows the real photo. Layers → Add → **Test Chart**
 paints a raster layer over it.
+
+### Look and layout
+
+One toolbar runs along the top: the File, View and Help menus, the **Import**
+button, the workspace switcher, what the importer is doing (with a pill
+counting failed files), and three toggles that show or hide the left panels,
+the filmstrip and the right panels. There is no status bar; GPU and frame rate
+are in the Engine panel.
+
+The **filter bar** above the grid and the filmstrip shows the collection, how
+many photos are showing, and the filters used while culling: minimum rating,
+flag, colour label and text search, plus sort order and thumbnail size in the
+grid. It wraps in the grid when the panel is narrow; in the filmstrip and the
+Split grid it stays on one row and drops controls from the right. The button
+at its right end opens the Filters panel, which always has all of them.
+
+An adjustment row is a label, a track and the value. The track fills from the
+default to the knob. Click the value, or `Ctrl`+click the track, to type a
+number; double-click the label to reset. On macOS the `Ctrl` shortcuts are on
+`Cmd`, and the menus say so.
+
+The theme is blue on black, defined once in `include/ui/theme.hpp`:
+
+- **Surfaces.** Photos sit on pure black (`kCanvas`), which is neutral. Panels
+  (`kWindow` `#080B11`), the toolbar and popups are blue-black, each a step
+  lighter than the one below it.
+- **Fills** are one pale blue (`kTint`) at an alpha, so buttons, fields and
+  separators sit correctly on any surface.
+- **Accent.** `kAccent` `#2F6FEB` marks the active workspace, selection,
+  ticked boxes and default buttons, and carries white text at 4.6:1.
+  `kAccentBright` `#5C9DFF` is for strokes on black: the focus ring, slider
+  fills, the selected thumbnail (bright only in the panel that takes the
+  culling keys).
+- **Text** is `kText` (16.9:1 on a panel), `kTextSecondary` for labels and
+  counts (8.5:1) and `kTextTertiary` for unavailable content only.
+- **Sizes.** Controls are 24 px tall on a 28 px row pitch; the toolbar is
+  28 px; radii are 5, 6 and 8 px. Thumbnails keep square corners.
+
+Icons are drawn with the draw list (`drawIcon`), so the UI needs no icon font.
+Sizes and fonts are scaled by the factor ImGui's platform backend reports,
+which is 1 on macOS and Wayland.
 
 ## Live photo preview
 
@@ -351,7 +418,10 @@ UI options: `--window WxH`, `--maximized`, `--no-vsync`, `--continuous`,
 DarkHouse logs a warning and runs headless, so batch work still completes.
 
 Put `subject_segmentation.onnx` / `sky_segmentation.onnx` in a directory and
-pass `--models <dir>` to enable AI selection. Run `DarkHouse --help` for every
+pass `--models <dir>` to enable AI selection. Lens profile corrections read a
+[lensfun](https://lensfun.github.io/) database: install the lensfun data package
+(`liblensfun-data-v1` on Debian/Ubuntu, `lensfun` elsewhere), set
+`DARKHOUSE_LENSFUN_DIR`, or pass `--lens-db <dir>`. Run `DarkHouse --help` for every
 option. Exit codes: `0` success, `1` fatal error, `2` some imports failed,
 `64` bad arguments.
 
@@ -364,13 +434,19 @@ ctest --test-dir build --output-on-failure
 | Test | Covers |
 | --- | --- |
 | `library_model` | Runs the engine headless on a temporary catalog: import, collections, folder tree, search, sorting, selection, and rating/flag/label round trips through engine events. |
-| `layer_stack` | F16C bulk conversion against the scalar code (all 65536 halves, ~1M float bit patterns), the single-layer pass-through against the full compositor on awkward pixels (NaN, −0, alpha outside [0, 1]), FP16 region writes, the parallel loop. |
+| `layer_stack` | F16C bulk conversion against the scalar code (all 65536 halves, ~1M float bit patterns), the single-layer pass-through against the full compositor on awkward pixels (NaN, −0, alpha outside [0, 1]), FP16 region writes, the parallel loop; the 16 blend modes, layer transforms, path flattening, vector coverage and strokes, adjustment layers (opacity, masks, groups), smart objects, dirty-tile mapping, mask preview, and brush / eraser / clone dabs with undo snapshots. |
+| `color_adjust` | The CPU references of the colour nodes: Oklab, white balance on the Planckian locus (illuminant A, D65 with its tint), the HSL mixer, colour grading, tone curves (spline, sanitizing, tables, HDR extension), parameter packing and the canonical develop order. |
+| `color_gpu` | White balance, HSL, colour grading, tone curves (including the table re-upload after an edit) and lens corrections on the GPU against those references, under synchronization validation. |
+| `lens_correction` | The lensfun XML reader (entities, translations, malformed files), lens and camera matching, interpolation across focal lengths and apertures, and the correction geometry: distortion direction and amount, TCA, vignetting, constrain crop, sanitizing. |
+| `mask_engine` | Mask components (brush rasterization and undo, linear and radial gradients, luminance and colour ranges, Subject / Sky placeholders), add / subtract / intersect, serialization, local adjustments and layer masks. |
+| `mask_gpu` | GPU mask generation and the local adjustment node against the CPU masks, with several masks over two texture layers, brush strokes and undo, and the overlay, under synchronization validation. |
 | `image_decoder` | Every supported format generated in memory, including hand-built 16-bit PNG, TIFF, RAW and RAF containers: exact linear values, all eight EXIF orientations, area-downscale weights, error messages, concurrent decodes. |
 | `photo_preview` | Opens photos through the whole app and reads back what the viewport shows: sRGB round trip within 1 LSB, a live +1 EV edit, enabling noise reduction (node order, measured noise, halved noise, saved stack), a resize with alpha, a missing file. Under core and synchronization validation. |
 | `denoise_reference` | The CPU denoiser: constants, noise estimation, exact reconstruction, PSNR gain, clean images left alone. |
 | `denoise_gpu` | GPU against CPU reference on several sizes (odd ones, one level, manual noise, bypass): same sigma, output within 1e-8 mean, +6 dB PSNR, no validation errors. |
 | `denoise_bench_smoke` | A tiny run of `darkhouse_denoise_bench`, so the benchmark keeps working. |
 | `present_smoke` | Opens a window, creates the presenting Vulkan 1.3 context and swapchain, and clears and presents 120 frames with dynamic rendering, resizing halfway. Runs with core **and synchronization** validation, and any validation error fails it. Exits 77 (skipped) without a display. |
+| `workspace_gui` | The real desktop shell in a window, scripted frame by frame: opening a photo from the Catalog lands in Develop; each workspace switch takes effect on the next frame with only that workspace's windows drawn; a 7-node develop stack (lens, white balance, tone, curves, HSL, grading, masked local adjustment) matches the CPU references (worst 3, mean 0.26 LSB); a 61-frame slider drag keeps the UI drawing while evaluations run (p95 frame interval ~23 ms on lavapipe) and saves the released value; a vector layer shows through the develop stack in Canvas; the red channel view is grey. Zero validation errors, synchronization validation included. |
 
 Tests that need a GPU exit 77 (skipped) without a Vulkan 1.3 device. The GUI
 tests run headless under Xvfb with Mesa's software Vulkan driver (lavapipe):
@@ -384,8 +460,17 @@ DISPLAY=:99 ctest --test-dir build --output-on-failure
 The shell has also been checked with Release GCC and Clang `-Werror` builds,
 an ASan/UBSan build, and scripted UI sessions under synchronization
 validation. Those sessions cover importing, culling, opening assets (which
-rebuilds the develop graph with frames in flight), live exposure edits,
-workspace switches and window resizes.
+rebuilds the develop graph with frames in flight), live develop and mask
+edits, painting, paths, transforms and undo in Canvas, workspace switches and
+window resizes. Under ASan, LeakSanitizer reports about 112 bytes allocated
+by lavapipe's worker threads once the Vulkan loader unloads the driver at
+exit; with the driver kept loaded (`LD_PRELOAD=.../libvulkan_lvp.so`) the
+report disappears, so it is the unload hiding the driver's own references.
+
+The blue and black UI (toolbar, filter bar, design tokens) has so far been
+checked on macOS only: AppleClang Debug and Release builds, the test suite
+above including `workspace_gui`, and a headless render of all four workspaces
+from the real shell and panels.
 
 ## Status
 
@@ -398,20 +483,27 @@ This is the core architecture plus the desktop shell. What works today:
   persistence.
 - **GPU**: device selection (discrete first), textures, staging uploads, the
   compute-node DAG with cycle detection, barriers and per-node timestamps,
-  and the exposure, noise-reduction and display-transform nodes. A
-  presenting context with swapchain, frame synchronization and a
-  debug-utils validation messenger.
+  non-blocking evaluation, and the develop nodes: noise reduction, lens
+  corrections, white balance, exposure / tone, tone curves, the HSL colour
+  mixer, colour grading, local (masked) adjustments with GPU mask
+  generation, and the display transform. A presenting context with
+  swapchain, frame synchronization and a debug-utils validation messenger.
 - **Photos**: decoding for the live preview (common formats, embedded RAW
   previews, EXIF orientation), asynchronous and downscaled in linear light.
-- **Layers**: sparse FP16 tiles with F16C conversion, dirty tracking, the
-  layer tree with masks and groups, the CPU reference compositor for all
-  five blend modes, and parallel tile upload.
-- **App**: event-driven frame loop, three modes, graceful degradation, headless
+- **Layers**: sparse FP16 tiles with F16C conversion, dirty tracking (mapped
+  through layer transforms), the layer tree with masks, groups and
+  transforms, and the CPU tile compositor: 16 blend modes, vector shapes,
+  adjustment layers, smart objects, and parallel tile upload. Adjustment
+  layers are evaluated on the CPU: on the 4-core test VM a full 3072 x 2048
+  recomposite takes about 50 ms for pixels and shapes, plus about 0.2 s per
+  curves or HSL adjustment layer.
+- **App**: event-driven frame loop, four modes, graceful degradation, headless
   batch mode.
-- **Desktop UI**: docking shell with three persistent workspace layouts, the
-  nine panels above, culling shortcuts, import by dialog or drag and drop,
-  the opened photo on the canvas with live exposure and noise-reduction
-  editing, idle-aware frame pacing, and a neutral grey theme.
+- **Desktop UI**: docking shell with four persistent workspace layouts
+  (Catalog, Develop, Canvas & Compositing, Split), the panels above, culling
+  shortcuts, import by dialog or drag and drop, the opened photo on the canvas
+  with live develop and local-mask editing, idle-aware frame pacing, and a
+  blue and black theme built from design tokens.
 
 Next milestones:
 
@@ -421,11 +513,13 @@ Next milestones:
    HEIF and RAF metadata.
 2. Full-resolution export: render the develop stack at full size in tiles.
    The canvas currently edits a working preview.
-3. GPU compositing: blend modes and masks as compute nodes, with the CPU
-   compositor kept as the parity reference. Adjustment, vector and
-   smart-object layers render there.
-4. GPU nodes for white balance, presence and HSL, wired to the existing sliders.
-5. Vector rasterization of `VECTOR_SHAPE` layers, and smart-object rendering.
+3. GPU compositing: blend modes, masks, transforms and adjustment layers as
+   compute nodes (the develop nodes already exist), with the CPU compositor
+   kept as the parity reference; asynchronous recompositing so a heavy
+   document never stalls the UI.
+4. Smart objects rendered through their full develop stack (denoise, lens
+   corrections and local masks included) on the GPU.
+5. AI segmentation models for the Subject / Sky mask placeholders.
 6. CI across macOS, Linux (Xvfb + lavapipe, as above) and Windows.
 
 ## Third-party components

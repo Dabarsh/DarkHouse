@@ -1,5 +1,7 @@
 #include "app_controller.hpp"
 
+#include "develop_stack.hpp"
+#include "local_adjust_node.hpp"
 #include "parallel.hpp"
 
 #include <algorithm>
@@ -45,6 +47,7 @@ public:
 std::string_view toString(AppMode mode) noexcept {
     switch (mode) {
     case AppMode::CATALOG: return "catalog";
+    case AppMode::DEVELOP: return "develop";
     case AppMode::CANVAS: return "canvas";
     case AppMode::HYBRID_SPLIT: return "split";
     }
@@ -53,6 +56,7 @@ std::string_view toString(AppMode mode) noexcept {
 
 std::optional<AppMode> parseAppMode(std::string_view text) noexcept {
     if (text == "catalog") return AppMode::CATALOG;
+    if (text == "develop") return AppMode::DEVELOP;
     if (text == "canvas") return AppMode::CANVAS;
     if (text == "split" || text == "hybrid") return AppMode::HYBRID_SPLIT;
     return std::nullopt;
@@ -200,7 +204,10 @@ void DarkHouseApp::initializeAi() {
 }
 
 void DarkHouseApp::disableCanvas() noexcept {
-    if (gpu_) gpu_->waitIdle();  // in-flight UI frames may still sample the canvas
+    if (gpu_) {
+        gpu_->waitIdle();  // in-flight UI frames may still sample the canvas
+        gpu_->release(developSubmission_);
+    }
     developGraph_.reset();
     developTimings_.clear();
     if (gpu_) gpu_->destroyTexture(canvasTexture_);
@@ -227,6 +234,7 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
     // Clearing destroys the nodes' output images, which UI frames still in
     // flight may be sampling.
     gpu_->waitIdle();
+    gpu_->release(developSubmission_);
     developGraph_->clear();
     developTimings_.clear();
     ++canvasGeneration_;
@@ -247,6 +255,8 @@ void DarkHouseApp::rebuildDevelopGraph(const std::vector<EditNodeRecord>& editSt
         developGraph_->addNode(std::make_unique<DisplayTransformNode>(*gpu_, config_.shaderDirectory));
     developGraph_->connectNodes(*previous, display, 0);
     graphDirty_ = true;
+    applyMaskOverlay();  // viewing aids survive the rebuild
+    applyDisplayChannel();
 }
 
 // -----------------------------------------------------------------------------
@@ -384,6 +394,11 @@ void DarkHouseApp::handle(const SetDevelopParamsEvent& event) {
         return;
     }
     EditNodeRecord& record = developStack_[event.nodeIndex];
+    if (!event.nodeType.empty() && event.nodeType != record.nodeType) {
+        logLine("warn", "develop parameters for a ", event.nodeType, " node ignored: node ", event.nodeIndex, " is ",
+            record.nodeType);
+        return;
+    }
     try {
         // The develop graph is a linear chain built in stack order, so node
         // ids equal stack indices (see rebuildDevelopGraph).
@@ -419,6 +434,41 @@ void DarkHouseApp::handle(const SetDevelopStackEvent& event) {
     }
 }
 
+void DarkHouseApp::handle(const SetMaskOverlayEvent& event) {
+    if (event.maskIndex == maskOverlay_) return;
+    maskOverlay_ = event.maskIndex;
+    applyMaskOverlay();
+}
+
+void DarkHouseApp::applyMaskOverlay() {
+    if (!developGraph_) return;
+    const std::optional<std::size_t> index = findDevelopNode(developStack_, LocalAdjustNode::kTypeName);
+    if (!index || *index >= developGraph_->nodeCount()) return;
+    if (auto* node = dynamic_cast<LocalAdjustNode*>(&developGraph_->node(static_cast<RenderPipelineGraph::NodeId>(*index)))) {
+        if (node->overlay() != maskOverlay_) {
+            node->setOverlay(maskOverlay_);
+            graphDirty_ = true;
+        }
+    }
+}
+
+void DarkHouseApp::handle(const SetDisplayChannelEvent& event) {
+    if (event.channel == displayChannel_) return;
+    displayChannel_ = event.channel;
+    applyDisplayChannel();
+}
+
+void DarkHouseApp::applyDisplayChannel() {
+    if (!developGraph_ || developGraph_->empty()) return;
+    // The display transform is the last node of the chain.
+    auto* display = dynamic_cast<DisplayTransformNode*>(
+        &developGraph_->node(static_cast<RenderPipelineGraph::NodeId>(developGraph_->nodeCount() - 1)));
+    if (display && display->channel() != displayChannel_) {
+        display->setChannel(displayChannel_);
+        graphDirty_ = true;
+    }
+}
+
 const ComputeNode* DarkHouseApp::developNode(std::size_t index) const {
     if (!developGraph_ || index >= developStack_.size() || index >= developGraph_->nodeCount()) return nullptr;
     return &developGraph_->node(static_cast<RenderPipelineGraph::NodeId>(index));
@@ -435,7 +485,7 @@ void DarkHouseApp::handle(const OpenAssetEvent& event) {
         rebuildDevelopGraph(assets_->loadEditStack(asset->id));
         startPhotoLoad(*asset);
         logLine("info", "opened ", asset->fileName, " [", asset->id, "]");
-        if (mode() == AppMode::CATALOG) handle(SwitchModeEvent{AppMode::CANVAS});
+        if (mode() == AppMode::CATALOG) handle(SwitchModeEvent{AppMode::DEVELOP});
     } catch (const std::exception& e) {
         logLine("error", "open failed for ", event.assetId, ": ", e.what());
     }
@@ -550,11 +600,9 @@ void DarkHouseApp::replaceDocument(std::unique_ptr<LayerNode> document, std::uin
 
 void DarkHouseApp::uploadDirtyCanvasTiles() {
     if (!gpu_) return;
-    std::vector<TileKey> dirty = takeDirtyTiles(*document_);
-    // A layer larger than the canvas can report tiles the canvas does not have.
-    const std::uint32_t tilesX = (canvasWidth_ + TILE_SIZE - 1) / TILE_SIZE;
-    const std::uint32_t tilesY = (canvasHeight_ + TILE_SIZE - 1) / TILE_SIZE;
-    std::erase_if(dirty, [&](const TileKey& key) { return key.tx >= tilesX || key.ty >= tilesY; });
+    // Tiles within the canvas that changed: written pixels (mapped through
+    // layer transforms), or all of them after a layer property changed.
+    const std::vector<TileKey> dirty = takeDirtyTiles(*document_, canvasWidth_, canvasHeight_);
     if (dirty.empty()) return;
 
     // Composite to FP16 on all cores (tiles are independent and the document
@@ -580,18 +628,37 @@ void DarkHouseApp::uploadDirtyCanvasTiles() {
 
 void DarkHouseApp::renderFrame(FrameContext& frame) {
     if (!developGraph_ || developGraph_->empty()) return;
-    if (graphDirty_) {
-        gpu_->submitAndWait([this](VkCommandBuffer commandBuffer) { developGraph_->evaluateGraph(commandBuffer); });
+    // Non-blocking: the graph is submitted and the frame goes on. The UI
+    // samples its output later on the same queue, so it sees the finished
+    // image without the CPU waiting. While one evaluation runs, further
+    // changes only mark the graph dirty; the next frame after it finishes
+    // submits once with the latest parameters (edits coalesce instead of
+    // queueing up behind a slow GPU).
+    if (developSubmission_.pending() && gpu_->finished(developSubmission_)) {
+        gpu_->release(developSubmission_);
         developTimings_ = developGraph_->readTimings();
+    }
+    if (graphDirty_ && !developSubmission_.pending()) {
+        developSubmission_ =
+            gpu_->submitAsync([this](VkCommandBuffer commandBuffer) { developGraph_->evaluateGraph(commandBuffer); });
         graphDirty_ = false;
+        ++developEvaluations_;
     }
     const std::vector<RenderPipelineGraph::NodeId> sinks = developGraph_->sinkNodes();
     if (!sinks.empty()) frame.canvasOutput = &developGraph_->outputOf(sinks.back());
 }
 
+bool DarkHouseApp::developBusy() const noexcept {
+    if (developSubmission_.pending()) return true;
+    return graphDirty_ && developGraph_ != nullptr && showsCanvas(mode());
+}
+
 bool DarkHouseApp::idle() const {
-    std::lock_guard lock(eventMutex_);
-    return events_.empty() && pendingImports_.empty() && !photoLoad_.valid();
+    {
+        std::lock_guard lock(eventMutex_);
+        if (!events_.empty()) return false;
+    }
+    return pendingImports_.empty() && !photoLoad_.valid() && !developBusy();
 }
 
 void DarkHouseApp::shutdown() noexcept {

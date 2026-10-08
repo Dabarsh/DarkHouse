@@ -1,6 +1,9 @@
 #include "render_pipeline.hpp"
 
+#include "color_nodes.hpp"
 #include "denoise_node.hpp"
+#include "lens_correction.hpp"
+#include "local_adjust_node.hpp"
 #include "vulkan_utils.hpp"
 
 #include <algorithm>
@@ -26,20 +29,23 @@ float finiteClamp(float value, float lo, float hi) { return std::isfinite(value)
 // -----------------------------------------------------------------------------
 
 PointOperatorNode::PointOperatorNode(const VulkanContext& context, const std::filesystem::path& shaderPath,
-                                     std::uint32_t pushConstantSize, PixelFormat outputFormat)
-    : context_(context), pushConstantSize_(pushConstantSize), outputFormat_(outputFormat) {
+                                     std::uint32_t pushConstantSize, PixelFormat outputFormat, std::uint32_t tableSize)
+    : context_(context), pushConstantSize_(pushConstantSize), outputFormat_(outputFormat), tableSize_(tableSize) {
+    if (tableSize_ % 4 != 0 || tableSize_ > 65536) {
+        throw std::invalid_argument("PointOperatorNode: a lookup table must be a multiple of 4 bytes, at most 65536");
+    }
     const VkDevice device = context_.device();
     try {
-        std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+        std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
         for (std::uint32_t i = 0; i < bindings.size(); ++i) {
-            bindings[i].binding = i;  // 0 = input, 1 = output
-            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            bindings[i].binding = i;  // 0 = input, 1 = output, 2 = lookup table
+            bindings[i].descriptorType = i < 2 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             bindings[i].descriptorCount = 1;
             bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         }
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = static_cast<std::uint32_t>(bindings.size());
+        layoutInfo.bindingCount = tableSize_ > 0 ? 3 : 2;
         layoutInfo.pBindings = bindings.data();
         checkVk(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &setLayout_), "vkCreateDescriptorSetLayout");
 
@@ -68,14 +74,13 @@ PointOperatorNode::PointOperatorNode(const VulkanContext& context, const std::fi
         checkVk(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_),
                 "vkCreateComputePipelines");
 
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        poolSize.descriptorCount = 2;
+        const std::array<VkDescriptorPoolSize, 2> poolSizes{{{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
+                                                             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}}};
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.maxSets = 1;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.poolSizeCount = tableSize_ > 0 ? 2 : 1;
+        poolInfo.pPoolSizes = poolSizes.data();
         checkVk(vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool_), "vkCreateDescriptorPool");
 
         VkDescriptorSetAllocateInfo setInfo{};
@@ -84,6 +89,20 @@ PointOperatorNode::PointOperatorNode(const VulkanContext& context, const std::fi
         setInfo.descriptorSetCount = 1;
         setInfo.pSetLayouts = &setLayout_;
         checkVk(vkAllocateDescriptorSets(device, &setInfo, &descriptorSet_), "vkAllocateDescriptorSets");
+
+        if (tableSize_ > 0) {
+            table_ = context_.createBuffer(tableSize_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                           /*hostVisible=*/false);
+            const VkDescriptorBufferInfo tableInfo{table_.buffer, 0, VK_WHOLE_SIZE};
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptorSet_;
+            write.dstBinding = 2;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write.pBufferInfo = &tableInfo;
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
     } catch (...) {
         destroy();
         throw;
@@ -99,6 +118,7 @@ void PointOperatorNode::destroy() noexcept {
     if (descriptorPool_ != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool_, nullptr);  // frees the set
     if (setLayout_ != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, setLayout_, nullptr);
     context_.destroyTexture(output_);
+    context_.destroyBuffer(table_);
     pipeline_ = VK_NULL_HANDLE;
     pipelineLayout_ = VK_NULL_HANDLE;
     descriptorPool_ = VK_NULL_HANDLE;
@@ -155,6 +175,15 @@ void PointOperatorNode::executeCompute(VkCommandBuffer commandBuffer) {
     recordImageBarrier(commandBuffer, output_, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                        VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        /*discardContents=*/true);
+    if (tableSize_ > 0 && tableDirty_) {
+        // Earlier evaluations' reads finish before the update; ours wait for it.
+        recordMemoryBarrier(commandBuffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
+                            VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdUpdateBuffer(commandBuffer, table_.buffer, 0, tableSize_, tableData());
+        recordMemoryBarrier(commandBuffer, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        tableDirty_ = false;
+    }
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout_, 0, 1, &descriptorSet_, 0,
                             nullptr);
@@ -202,7 +231,8 @@ std::vector<std::byte> ExposureNode::pack(const ExposureParams& params) {
 // -----------------------------------------------------------------------------
 
 DisplayTransformNode::DisplayTransformNode(const VulkanContext& context, const std::filesystem::path& shaderDirectory)
-    : PointOperatorNode(context, shaderDirectory / "display_srgb.spv", 0, PixelFormat::R8G8B8A8_UNORM) {}
+    : PointOperatorNode(context, shaderDirectory / "display_srgb.spv", sizeof(std::array<std::uint32_t, 4>),
+                        PixelFormat::R8G8B8A8_UNORM) {}
 
 void DisplayTransformNode::updateUniforms(std::span<const std::byte> packedParams) {
     if (!packedParams.empty()) throw std::invalid_argument("DisplayTransformNode takes no parameters");
@@ -212,6 +242,12 @@ std::unique_ptr<ComputeNode> createComputeNode(std::string_view nodeType, const 
                                                const std::filesystem::path& shaderDirectory) {
     if (nodeType == ExposureNode::kTypeName) return std::make_unique<ExposureNode>(context, shaderDirectory);
     if (nodeType == DenoiseNode::kTypeName) return std::make_unique<DenoiseNode>(context, shaderDirectory);
+    if (nodeType == WhiteBalanceNode::kTypeName) return std::make_unique<WhiteBalanceNode>(context, shaderDirectory);
+    if (nodeType == HslNode::kTypeName) return std::make_unique<HslNode>(context, shaderDirectory);
+    if (nodeType == ColorGradingNode::kTypeName) return std::make_unique<ColorGradingNode>(context, shaderDirectory);
+    if (nodeType == ToneCurveNode::kTypeName) return std::make_unique<ToneCurveNode>(context, shaderDirectory);
+    if (nodeType == LensCorrectionNode::kTypeName) return std::make_unique<LensCorrectionNode>(context, shaderDirectory);
+    if (nodeType == LocalAdjustNode::kTypeName) return std::make_unique<LocalAdjustNode>(context, shaderDirectory);
     throw std::invalid_argument("unknown compute node type '" + std::string(nodeType) + "'");
 }
 
